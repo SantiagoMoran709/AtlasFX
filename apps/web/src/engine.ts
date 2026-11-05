@@ -2,6 +2,7 @@ import {activeClips, fadeEnvelope, transitionNear, sourceSpan, SECOND, type Asse
 import type {MediaResource} from './media';
 import {AudioGraph,silentLevels} from './audioGraph';
 import {prepareAudio} from './scheduledAudio';
+import {ChromaRenderer} from './chromaKey';
 
 const MAX_IDLE_MEDIA = 12;
 const IDLE_MEDIA_MS = 2500;
@@ -13,6 +14,7 @@ export class Compositor {
   private lastUsed = new Map<string, number>();
   private graph?:AudioGraph;
   private transitionCanvas?: HTMLCanvasElement;
+  private chroma?: ChromaRenderer;
   private scheduledBuffers?:Map<string,AudioBuffer>;
   private failed = new Set<string>();
   private lastActive=new Set<string>();private pendingSeek=new Set<string>();private previousTime=0;private sourceMapping=new Map<string,string>();
@@ -176,7 +178,10 @@ export class Compositor {
       const scale = Math.min(width / w, height / h) * clip.scale;
       ctx.translate(width / 2, height / 2);
       ctx.rotate(clip.rotation * Math.PI / 180);
-      ctx.drawImage(drawable, -w * scale / 2, -h * scale / 2, w * scale, h * scale);
+      const frame = clip.chromaKey?.enabled
+        ? (this.chroma ??= new ChromaRenderer()).render(drawable, w, h, scale, clip.chromaKey)
+        : drawable;
+      ctx.drawImage(frame, -w * scale / 2, -h * scale / 2, w * scale, h * scale);
     }
     ctx.restore();
   }
@@ -208,5 +213,5 @@ export class Compositor {
     return true;
   }
   private release(id:string){const el=this.elements.get(id);if(el instanceof HTMLMediaElement){el.pause();el.removeAttribute('src');el.load();}this.graph?.release(id);this.elements.delete(id);this.urls.delete(id);this.lastUsed.delete(id);this.pendingSeek.delete(id);this.sourceMapping.delete(id);}
-  dispose(){for(const id of this.elements.keys())this.release(id);this.graph?.dispose();}
+  dispose(){for(const id of this.elements.keys())this.release(id);this.graph?.dispose();this.chroma?.dispose();}
 }

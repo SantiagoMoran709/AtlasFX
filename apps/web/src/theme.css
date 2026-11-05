@@ -133,3 +133,19 @@ body,.app{background:#0e0e10}.app{min-height:720px}.app-header{background:#17171
 }
 .audio-mixer .meter-readout { font-size: 8px; }
 .audio-mixer .reset-peak { width: 14px; height: 16px; padding: 0; }
+
+.chroma-controls {
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.chroma-heading,
+.chroma-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chroma-heading { justify-content: space-between; margin-bottom: 8px; }
+.chroma-heading h3 { font-size: 12px; font-weight: 600; }
+.color-panel .chroma-controls fieldset { padding: 0; }
+.chroma-toggle { padding: 4px 0; font-size: 12px; }
+.chroma-toggle input { accent-color: var(--accent); }

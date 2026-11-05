@@ -35,6 +35,20 @@ export interface TitleStyle {
   y: number;
   bold: boolean;
 }
+export interface ChromaKey {
+  enabled: boolean;
+  color: string;
+  tolerance: number;
+  softness: number;
+  spill: number;
+}
+export const DEFAULT_CHROMA_KEY: ChromaKey = {
+  enabled: false,
+  color: '#00ff00',
+  tolerance: 0.3,
+  softness: 0.14,
+  spill: 0.6,
+};
 export interface Clip {
   audioOnly?: true;
   audioDetached?: true;
@@ -57,6 +71,7 @@ export interface Clip {
     hue: number;
   };
   title?: TitleStyle;
+  chromaKey?: ChromaKey;
 }
 export interface Track {
   id: string;
@@ -335,6 +350,21 @@ export function validateProject(p: Project): void {
         ),
         'Duración del fundido no válida.',
       );
+      if (c.chromaKey !== undefined) {
+        const key = c.chromaKey;
+        check(
+          t.kind === 'video' &&
+            !a.generated &&
+            key &&
+            typeof key.enabled === 'boolean' &&
+            typeof key.color === 'string' &&
+            /^#[\da-f]{6}$/i.test(key.color) &&
+            [key.tolerance, key.softness, key.spill].every(
+              (value) => finite(value) && value >= 0 && value <= 1,
+            ),
+          'Ajustes de chroma key no válidos.',
+        );
+      }
       if (c.color)
         check(
           finite(c.color.exposure) &&
@@ -490,6 +520,7 @@ export function setClipProps(
       | 'fadeIn'
       | 'fadeOut'
       | 'title'
+      | 'chromaKey'
     >
   >,
 ): Project {

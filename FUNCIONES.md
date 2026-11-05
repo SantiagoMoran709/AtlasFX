@@ -22,6 +22,7 @@ Los menús presentan acciones implementadas. Se desactivan cuando falta una sele
 - La disolvencia cruzada y el barrido se aplican entre clips de imagen o video contiguos en la misma pista. El efecto se centra en el corte y conserva la duración de los clips y el corte de audio.
 - El botón Texto inserta un título en el cursor. Se edita el contenido, tamaño, color, posición y negrita desde el Inspector.
 - Edición → Doble visor alterna entre uno y dos visores. El panel inferior mantiene accesibles las pestañas Inspector, Audio y Color.
+- Color → Chroma key quita el fondo de un clip por color y deja ver las pistas inferiores. Los ajustes de color de fondo, tolerancia, suavizado y reflejo se guardan por clip y se aplican al exportar.
 - Separar audio crea un clip editable en una pista de audio con los mismos tiempos y recortes. El video queda silenciado y ambos clips se pueden mover y recortar por separado.
 - Cada proyecto admite hasta 100 pistas entre video, audio y títulos. La fluidez con varias capas simultáneas depende del equipo, la resolución y los códecs.
 - El histograma RGB se calcula del fotograma visible, con normalización independiente de los canales. La corrección es SDR básica mediante filtros de Canvas 2D.

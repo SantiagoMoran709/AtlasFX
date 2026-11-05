@@ -172,6 +172,7 @@ export function joinNext(p: Project, id: string): Project {
       'scale',
       'rotation',
       'color',
+      'chromaKey',
       'title',
     ] as const)
       if (JSON.stringify(clip[key]) !== JSON.stringify(next[key]))
