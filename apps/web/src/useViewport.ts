@@ -1,0 +1,2 @@
+import {useEffect,useState,type RefObject} from 'react';
+export function useViewport(ref:RefObject<HTMLElement>){const [size,setSize]=useState({width:640,height:360});useEffect(()=>{const el=ref.current;if(!el)return;const observer=new ResizeObserver(()=>setSize({width:el.clientWidth,height:el.clientHeight}));observer.observe(el);setSize({width:el.clientWidth,height:el.clientHeight});return()=>observer.disconnect();},[ref]);return size;}

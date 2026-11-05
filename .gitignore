@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.turbo/
+test-results/
+*.log
+tmp/
+.vs/
+output/
+.env
+.env.*
+*.vedit
+/*.exe

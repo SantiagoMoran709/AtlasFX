@@ -1,0 +1,1 @@
+{"name":"@corte/core","version":"0.1.0","private":true,"type":"module","exports":"./src/index.ts","scripts":{"build":"tsc","typecheck":"tsc"},"dependencies":{"immer":"^10.2.0"}}

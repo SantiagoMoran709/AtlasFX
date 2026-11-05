@@ -1,0 +1,24 @@
+{
+  "name": "atlasfx",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @corte/web dev",
+    "build": "turbo build",
+    "test": "vitest run",
+    "typecheck": "turbo typecheck",
+    "desktop": "pnpm --filter @corte/desktop start",
+    "lint": "eslint apps packages",
+    "format:check": "prettier --check packages/core/src apps/web/src/media.ts apps/web/src/mp4Metadata.ts eslint.config.js .prettierrc.json"
+  },
+  "devDependencies": {
+    "eslint": "^10.14.0",
+    "prettier": "^3.9.10",
+    "turbo": "^2.5.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^3.2.0"
+  },
+  "packageManager": "pnpm@11.25.0"
+}
