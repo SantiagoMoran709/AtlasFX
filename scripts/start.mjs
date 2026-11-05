@@ -1,14 +1,18 @@
 import {spawn} from 'node:child_process';
 import {existsSync} from 'node:fs';
+import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const desktop=process.argv.includes('--desktop');
 if(desktop){
-  const binary=path.join(root,'apps/desktop/node_modules/electron/dist/electron.exe');
-  if(!existsSync(binary)||!existsSync(path.join(root,'apps/web/dist/index.html'))){console.error('Ejecuta pnpm install, node apps/desktop/node_modules/electron/install.js y pnpm build primero.');process.exit(1);}
+  const desktopApp=path.join(root,'apps/desktop');
+  if(!existsSync(path.join(root,'apps/web/dist/index.html'))){console.error('Falta la compilación de AtlasFX. Ejecuta pnpm build.');process.exit(1);}
+  let binary;
+  try{binary=createRequire(path.join(desktopApp,'package.json'))('electron');}
+  catch(error){console.error('No se pudo preparar Electron. Ejecuta pnpm install y comprueba la conexión.',error.message);process.exit(1);}
   const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
-  const child=spawn(binary,[path.join(root,'apps/desktop')],{cwd:root,detached:true,stdio:'ignore',windowsHide:false,env});child.unref();
+  const child=spawn(binary,[desktopApp],{cwd:root,detached:true,stdio:'ignore',windowsHide:false,env});child.unref();
 }else{
   const url='http://127.0.0.1:5173/';
   let ready=false;try{ready=(await fetch(url)).ok;}catch{}
