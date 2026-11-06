@@ -2,7 +2,17 @@
 
 Editor de video multipista para web y escritorio. Incluye interfaz en español, edición local y un núcleo TypeScript independiente de React.
 
-## Abrir en este equipo
+## Descargar y abrir en Windows x64
+
+Comparte el ZIP `AtlasFX-0.1.0-Windows-x64.zip` de la carpeta `output`.
+En el equipo de destino, extrae todo el ZIP y abre `AtlasFX/AtlasFX.exe`.
+El paquete incluye Electron y el editor compilado y funciona sin instalar Node.js o pnpm.
+Conserva juntos los archivos de la carpeta extraída.
+
+El paquete no tiene una firma de publicación propia de AtlasFX. Una descarga nueva puede
+mostrar un aviso de reputación de SmartScreen. Consulta la [guía de Microsoft sobre SmartScreen](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation).
+
+## Abrir desde el código fuente
 
 - Doble clic en **Abrir editor.cmd** para abrir la versión web en el navegador.
 - Doble clic en **Abrir escritorio.cmd** para abrir la misma interfaz en Electron.
@@ -14,8 +24,7 @@ Los accesos requieren las dependencias instaladas. El de escritorio requiere tam
 Requisitos: Node.js 22.12 o superior y pnpm 11.25.0.
 
 ```sh
-pnpm install
-node apps/desktop/node_modules/electron/install.js
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
@@ -26,6 +35,12 @@ pnpm build
 pnpm desktop
 ```
 
+Para generar el ZIP de distribución desde Windows x64:
+
+```sh
+pnpm package:win
+```
+
 Comprobaciones:
 
 ```sh
@@ -33,6 +48,10 @@ pnpm test
 pnpm typecheck
 pnpm build
 ```
+
+## Sitio de presentación
+
+Abre `site/index.html` directamente o usa `site/` como carpeta pública de un entorno estático.
 
 ## Interfaz de edición
 
@@ -50,7 +69,7 @@ Haz clic en un medio de la biblioteca para revisarlo en el monitor de origen. Lo
 2. Pulsa `+` sobre un medio, haz doble clic o arrástralo a una pista compatible.
 3. Mueve los clips, arrastra sus bordes para recortar y pulsa `S` para dividir en el cursor. Los solapes se rechazan sin alterar el proyecto.
 4. Ajusta posición temporal, entrada, duración, escala, rotación, opacidad y volumen en el inspector. Confirma los campos con Enter o al salir del campo.
-5. Usa Exportar video: MP4 H.264/AAC cuando el navegador lo permite, o WebM VP9/VP8 con Opus. Configura resolución, FPS y bitrate.
+5. Abre **Exportar video**, elige la resolución, los FPS, el formato y la calidad, y pulsa **Renderizar y revisar**. Reproduce el resultado para observar su cadencia antes de usar **Guardar video**. Si el render detecta una demora, podés saltar al primer punto señalado.
 
 Atajos: Espacio reproduce/pausa; S o Ctrl+B divide; Supr elimina; Ctrl+Z deshace; Ctrl+Shift+Z rehace; flechas desplazan un fotograma; J retrocede un segundo; K pausa; L reproduce hacia delante; +/- cambia zoom; Ctrl+S guarda localmente; Ctrl+Shift+S descarga .vedit; Ctrl+I importa medios; Ctrl+C/X/V copia, corta y pega clips; Ctrl+D duplica; Shift+Supr elimina y cierra el espacio en esa pista; Ctrl+E abre exportación.
 
@@ -93,7 +112,7 @@ Pendiente del diseño original:
 - Filtros avanzados, keyframes, velocidad, ondas de audio y proxies. Ya hay títulos editables, disolvencia cruzada, barrido, fundidos lineales del clip y corrección básica de color.
 - Paneles redimensionables, selección múltiple, múltiples secuencias por proyecto y virtualización. Los ajustes de resolución y FPS ya están disponibles.
 - OPFS para archivos grandes, migraciones futuras, copias de recuperación y limpieza de caché.
-- Empaquetado en instalador, firma y actualizaciones automáticas de Electron.
+- Instalador, firma de publicación y actualizaciones automáticas de Electron.
 - Pruebas de sincronía A/V, rendimiento, códecs variados y navegador de extremo a extremo automatizadas.
 
 El patrón de seguridad de Electron sigue la [documentación oficial de Electron](https://www.electronjs.org/docs/latest/tutorial/security). El entorno de compilación sigue los [requisitos de Vite](https://vite.dev/guide/).

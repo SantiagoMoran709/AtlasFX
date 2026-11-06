@@ -1,5 +1,5 @@
 import {SlidersHorizontal,Film,Info} from 'lucide-react';
-import {findClip,moveClip,trimClip,setClipProps,SECOND,type Project} from '@corte/core';
+import {findClip,moveClip,trimClip,setClipProps,SECOND,TITLE_FONTS,type Project} from '@corte/core';
 import {useEditor} from './store';
 import {Parameter,dbToGain,gainToDb} from './Controls';
 import type {Compositor} from './engine';
@@ -16,11 +16,17 @@ export function Inspector({project:p,disabled,engine,onSeparateAudio,canSeparate
   const field=(label:string,value:number,update:(n:number)=>void,options:{min?:number;max?:number;step?:number}={})=><label className="property-field"><span>{label}</span><input key={`${selected}-${label}-${value}`} type="number" disabled={disabled} defaultValue={value} {...options} onBlur={e=>{const raw=e.target.value;const n=Number(raw);e.target.value=String(value);if(raw!==''&&n!==value)update(n);}} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();}}/></label>;
   return <aside className="inspector"><div className="panel-heading"><span><SlidersHorizontal size={15}/> Inspector</span><span className="tiny muted">{clip?'CLIP':'PROYECTO'}</span></div>
     {clip&&asset?<><div className="inspector-selection"><div className="file-icon"><Film/></div><div><strong>{asset.name}</strong><span>{title?'Texto editable':kind==='image'?'Imagen':kind==='audio'?'Audio':clip.audioDetached?'Video · Audio separado':'Video'}{!title&&' · '}{!title&&(kind!=='audio'&&asset.width?`${asset.width} × ${asset.height}`:'Estéreo / mono')}</span></div></div>
-    {title && <fieldset disabled={disabled}><legend>TÍTULO</legend>
-      <label className="title-text-field">Texto<textarea aria-label="Texto del título" rows={3} maxLength={1000}
+    {title && <fieldset disabled={disabled}><legend>{title.outline?'SUBTÍTULO':'TÍTULO'}</legend>
+      <label className="title-text-field">Texto<textarea aria-label={title.outline?'Texto del subtítulo':'Texto del título'} rows={3} maxLength={1000}
         key={`${clip.id}:${title.text}`} defaultValue={title.text}
         onBlur={event => { if (event.currentTarget.value !== title.text) updateTitle({text: event.currentTarget.value}); }}/></label>
       <p className="hint">El texto se actualiza al salir del campo.</p>
+      <label className="property-field">Tipo de letra
+        <select value={title.font ?? ''} onChange={event=>updateTitle({font:TITLE_FONTS.find(font=>font===event.target.value)})}>
+          <option value="">Predeterminada</option>
+          {TITLE_FONTS.map(font=><option key={font}>{font}</option>)}
+        </select>
+      </label>
       {field('Tamaño (px)',title.size,n=>updateTitle({size:n}),{min:12,max:500,step:1})}
       <label className="property-field">Color del texto<input type="color" value={title.color} onChange={event=>updateTitle({color:event.currentTarget.value})}/></label>
       {field('Posición horizontal (%)',title.x,n=>updateTitle({x:n}),{min:0,max:100,step:1})}

@@ -9,6 +9,7 @@
     "test": "vitest run",
     "typecheck": "turbo typecheck",
     "desktop": "pnpm --filter @corte/desktop start",
+    "package:win": "pnpm --filter @corte/web build && node scripts/package-windows.mjs",
     "lint": "eslint apps packages",
     "format:check": "prettier --check packages/core/src apps/web/src/media.ts apps/web/src/mp4Metadata.ts eslint.config.js .prettierrc.json"
   },

@@ -167,11 +167,18 @@ export class Compositor {
       ctx.translate(width * title.x / 100, height * title.y / 100);
       ctx.rotate(clip.rotation * Math.PI / 180);
       ctx.fillStyle = title.color;
-      ctx.font = `${title.bold ? '700' : '400'} ${size}px sans-serif`;
+      ctx.font = `${title.bold ? '700' : '400'} ${size}px ${title.font ? `"${title.font}", ` : ''}sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const lines = title.text.split(/\r?\n/);
-      lines.forEach((line, i) => ctx.fillText(line, 0, (i - (lines.length - 1) / 2) * size * 1.2, width * .9));
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = Math.max(1, size * .12);
+      ctx.lineJoin = 'round';
+      lines.forEach((line, i) => {
+        const y = (i - (lines.length - 1) / 2) * size * 1.2;
+        if (title.outline) ctx.strokeText(line, 0, y, width * .9);
+        ctx.fillText(line, 0, y, width * .9);
+      });
     } else if (drawable) {
       const w = drawable instanceof HTMLVideoElement ? drawable.videoWidth : drawable.naturalWidth;
       const h = drawable instanceof HTMLVideoElement ? drawable.videoHeight : drawable.naturalHeight;

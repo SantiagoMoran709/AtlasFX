@@ -27,6 +27,7 @@ export interface Asset {
   generated?: 'title';
   metadata?: MediaMetadata;
 }
+export const TITLE_FONTS = ['Arial', 'Georgia', 'Verdana', 'Trebuchet MS', 'Courier New'] as const;
 export interface TitleStyle {
   text: string;
   size: number;
@@ -34,6 +35,8 @@ export interface TitleStyle {
   x: number;
   y: number;
   bold: boolean;
+  outline?: true;
+  font?: (typeof TITLE_FONTS)[number];
 }
 export interface ChromaKey {
   enabled: boolean;
@@ -311,7 +314,9 @@ export function validateProject(p: Project): void {
             typeof title.color === 'string' &&
             /^#[\da-f]{6}$/i.test(title.color) &&
             [title.x, title.y].every((n) => finite(n) && n >= 0 && n <= 100) &&
-            typeof title.bold === 'boolean',
+            typeof title.bold === 'boolean' &&
+            (title.outline === undefined || title.outline === true) &&
+            (title.font === undefined || TITLE_FONTS.includes(title.font)),
           'Ajustes de título no válidos.',
         );
       } else check(c.title === undefined, 'El clip no es un título.');
@@ -597,42 +602,61 @@ export function addTitle(
   project: Project,
   start: Time,
   clipId = uid(),
+  kind: 'title' | 'subtitle' = 'title',
+): Project {
+  return addTextClips(project, [{ id: clipId, start, duration: 3 * SECOND,
+    text: kind === 'subtitle' ? 'Escribe tu subtítulo' : 'Escribe tu título' }], kind);
+}
+
+export function addSubtitles(
+  project: Project,
+  cues: {start: Time; duration: Time; text: string}[],
+): Project {
+  if (!cues.length) return project;
+  return addTextClips(project, cues, 'subtitle');
+}
+
+function addTextClips(
+  project: Project,
+  cues: {id?: string; start: Time; duration: Time; text: string}[],
+  kind: 'title' | 'subtitle',
 ): Project {
   return edit(project, (draft) => {
-    const duration = 3 * SECOND;
-    const asset: Asset = {
-      id: uid(),
-      name: 'Título',
-      kind: 'image',
-      duration,
-      mime: '',
-      generated: 'title',
-    };
+    const subtitle = kind === 'subtitle';
+    const trackName = subtitle ? 'Subtítulos' : 'Títulos';
     const top = draft.tracks[0];
     const available =
       top?.role === 'titles' &&
+      (subtitle ? top.name === trackName : top.name !== 'Subtítulos') &&
       top.visible &&
       !top.locked &&
       top.clips.every(
-        (clip) =>
-          clip.start + clip.duration <= start || clip.start >= start + duration,
+        (clip) => cues.every(({start, duration}) =>
+          clip.start + clip.duration <= start || clip.start >= start + duration),
       );
     const track = available
       ? top
-      : { ...createTrack('video', 'Títulos'), role: 'titles' as const };
+      : { ...createTrack('video', trackName), role: 'titles' as const };
     if (!available) draft.tracks.unshift(track);
-    draft.assets[asset.id] = asset;
-    track.clips.push({
-      ...createClip(asset, start),
-      id: clipId,
-      title: {
-        text: 'Escribe tu título',
-        size: 72,
-        color: '#ffffff',
-        x: 50,
-        y: 50,
-        bold: true,
-      },
-    });
+    for (const {id, start, duration, text} of cues) {
+      const asset: Asset = {
+        id: uid(), name: subtitle ? 'Subtítulo' : 'Título',
+        kind: 'image', duration, mime: '', generated: 'title',
+      };
+      draft.assets[asset.id] = asset;
+      track.clips.push({
+        ...createClip(asset, start),
+        id: id ?? uid(),
+        title: {
+          text,
+          size: subtitle ? Math.max(12, Math.round(draft.settings.height * .046)) : 72,
+          color: '#ffffff',
+          x: 50,
+          y: subtitle ? 88 : 50,
+          bold: true,
+          ...(subtitle ? { outline: true } : {}),
+        },
+      });
+    }
   });
 }

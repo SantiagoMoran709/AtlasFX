@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeClips,
+  addSubtitles,
   addTitle,
   createClip,
   createProject,
@@ -37,6 +38,24 @@ function footage() {
 }
 
 describe('titles', () => {
+  it('keeps timed subtitles on one track and saves the chosen font', () => {
+    const project = addSubtitles(footage(), [
+      { start: seconds(1), duration: seconds(1), text: 'Primera frase' },
+      { start: seconds(2), duration: seconds(1), text: 'Segunda frase' },
+    ]);
+    const first = project.tracks[0].clips[0];
+    const edited = setClipProps(project, first.id, {
+      title: { ...first.title!, font: 'Georgia' },
+    });
+    const reopened = parseProject(serialize(edited));
+    expect(reopened.tracks[0].name).toBe('Subtítulos');
+    expect(reopened.tracks[0].clips).toHaveLength(2);
+    expect(reopened.tracks[0].clips[0]).toMatchObject({
+      start: seconds(1),
+      title: { text: 'Primera frase', y: 88, outline: true, font: 'Georgia' },
+    });
+  });
+
   it('stores editable title layers in the project without imported files', () => {
     const original = footage();
     const id = uid();
