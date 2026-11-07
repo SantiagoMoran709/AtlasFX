@@ -1,4 +1,5 @@
 import { produce } from 'immer';
+import {validCinema, type CinemaSettings} from './cinema';
 import {
   pruneTransitions,
   validateTransitions,
@@ -7,6 +8,7 @@ import {
 import { frameToTime, secToTime, sourceSpan, SECOND, type Time } from './time';
 
 export * from './time';
+export * from './cinema';
 export type Kind = 'video' | 'audio' | 'image';
 export interface MediaMetadata {
   hasAudio: boolean;
@@ -63,6 +65,9 @@ export interface Clip {
   volume: number;
   opacity: number;
   scale: number;
+  x?: number;
+  y?: number;
+  blurBackground?: true;
   rotation: number;
   speed?: number;
   fadeIn?: Time;
@@ -100,6 +105,7 @@ export interface Project {
     fps: number;
     sampleRate: number;
     masterVolume?: number;
+    cinema?: CinemaSettings;
   };
   assets: Record<string, Asset>;
   tracks: Track[];
@@ -188,6 +194,7 @@ export function validateProject(p: Project): void {
     'Configuración no válida.',
   );
   check(p.settings.sampleRate === 48000, 'Frecuencia de audio no compatible.');
+  check(p.settings.cinema === undefined || validCinema(p.settings.cinema), 'Ajustes de cine no válidos.');
   check(
     p.settings.masterVolume === undefined ||
       (finite(p.settings.masterVolume) &&
@@ -342,6 +349,9 @@ export function validateProject(p: Project): void {
           finite(c.opacity) &&
           c.opacity >= 0 &&
           c.opacity <= 1 &&
+          (c.blurBackground === undefined || (c.blurBackground === true && a.kind !== 'audio' && !a.generated && !c.audioOnly)) &&
+          [c.x, c.y].every(position => position === undefined ||
+            (finite(position) && position >= 0 && position <= 100)) &&
           finite(c.scale) &&
           c.scale >= 0.1 &&
           c.scale <= 4 &&
@@ -520,6 +530,9 @@ export function setClipProps(
       | 'volume'
       | 'opacity'
       | 'scale'
+      | 'x'
+      | 'y'
+      | 'blurBackground'
       | 'rotation'
       | 'color'
       | 'fadeIn'

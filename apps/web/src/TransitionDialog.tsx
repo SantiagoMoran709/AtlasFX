@@ -36,6 +36,8 @@ export function TransitionDialog({project, selected, onClose, onSeek}: {
           onChange={event => setKind(event.target.value as TransitionKind)}>
           <option value="dissolve">Disolvencia cruzada</option>
           <option value="wipe">Barrido de izquierda a derecha</option>
+          <option value="dip">Fundido a negro</option>
+          <option value="flash">Destello de luz</option>
         </select></label>
         <label className="dialog-field">Duración (s)<input type="number" required step="any" min={.000001} max={max}
           value={duration} onChange={event => setDuration(Number(event.target.value))}/></label>

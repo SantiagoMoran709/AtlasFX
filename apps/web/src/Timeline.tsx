@@ -114,7 +114,7 @@ export function Timeline({project:p,resources,timeRef,playheadRef,seek,split,rem
       {t.transitions?.map(transition=>{
         const incoming=t.clips.find(clip=>clip.id===transition.to);
         if(!incoming)return null;
-        const label=transition.kind==='dissolve'?'Disolvencia cruzada':'Barrido';
+        const label={dissolve:'Disolvencia cruzada',wipe:'Barrido',dip:'Fundido a negro',flash:'Destello de luz'}[transition.kind];
         return <button key={transition.from} className="transition-cut" aria-label={`Editar transición de ${label.toLowerCase()}`} title={label}
           style={{left:incoming.start/SECOND*zoom,width:Math.max(18,transition.duration/SECOND*zoom)}}
           disabled={disabled||t.locked} onClick={event=>{event.stopPropagation();select(transition.from);onTransition(transition.from);}}/>;

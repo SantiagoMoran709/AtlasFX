@@ -212,3 +212,94 @@ body,.app{background:#0e0e10}.app{min-height:720px}.app-header{background:#17171
 .render-stats dt { font-size: 11px; color: #b8c4ce; }
 .render-stats dd { margin: 4px 0 0; font-size: 15px; }
 .render-review .export-stream-notice .button { margin: 4px 0; }
+
+.project-browser .projects-title-row {
+  min-height: 188px;
+  padding: 28px clamp(16px, 4vw, 48px);
+  border: 1px solid #d6d9ed25;
+  border-radius: 16px;
+  background:
+    linear-gradient(90deg, #17191ff5 12%, #17191fac 52%, #17191f5c),
+    url('./assets/projects-fuji.jpg') 72% 54% / cover no-repeat;
+}
+.project-browser .projects-title-row p { color: #e0dce2; }
+.project-browser .projects-title-row .eyebrow { color: #ace3d3; }
+
+.project-tile.selected {
+  border-color: #9ce2d2;
+  box-shadow: 0 0 0 2px #8ad1c526;
+}
+.project-tile-main:focus-visible {
+  outline: 2px solid #a6eddd;
+  outline-offset: -3px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .projects-title-row {
+    animation: project-intro .36s cubic-bezier(.22, .65, .36, 1) both;
+  }
+  .project-tile {
+    transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
+  }
+  .project-cover > img { transition: transform .28s ease-out; }
+  .project-selected-check { animation: project-intro .18s ease-out both; }
+
+  @media (hover: hover) {
+    .project-tile-main:not(:disabled):hover .project-cover > img { transform: scale(1.035); }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-tile { transition: none; }
+}
+
+@keyframes project-intro {
+  from { opacity: .65; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.project-settings { width: min(620px, 95vw); max-height: calc(100dvh - 48px); overflow: auto; }
+.content-tools { margin-top: 18px; }
+.content-tools h3 { font-size: 15px; margin-bottom: 8px; }
+.content-tools details { border-top: 1px solid #ffffff1e; padding: 10px 0; }
+.content-tools summary { cursor: pointer; font-weight: 650; }
+.content-tools .button { margin-top: 8px; }
+.content-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.content-actions label { display: inline-flex; align-items: center; gap: 6px; }
+.content-tools video { display: block; width: 100%; max-height: 25vh; margin-top: 8px; background: #09090b; }
+.content-tools .content-checkbox { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.content-checkbox input { width: auto; }
+
+.content-tools summary {
+  border-radius: 5px;
+  color: #dce4eb;
+}
+.content-tools summary:hover,
+.content-tools details[open] > summary { color: #a6eddd; }
+.content-tools summary:focus-visible { outline: 2px solid #a6eddd; outline-offset: 3px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .modal-backdrop > .modal,
+  .modal-backdrop > form.modal {
+    animation: project-intro .23s cubic-bezier(.22, .65, .36, 1) both;
+  }
+  .content-tools details[open] > :not(summary) {
+    animation: project-intro .2s ease-out both;
+  }
+  .content-tools summary { transition: color .18s ease; }
+  .content-tools .button { transition: background-color .18s ease, border-color .18s ease, color .18s ease; }
+}
+
+.program-canvas { position: relative; flex: none; }
+.program-canvas > canvas { display: block; width: 100%; height: 100%; max-width: none; max-height: none; }
+.cinema-guides { position: absolute; left: 0; width: 100%; pointer-events: none; fill: none; stroke: #caffed; stroke-width: 1; stroke-dasharray: 6 5; filter: drop-shadow(0 0 2px #000); }
+.cinema-panel { padding: 10px; }
+.cinema-panel fieldset { margin-top: 10px; padding: 10px; border: 1px solid #ffffff20; border-radius: 8px; }
+.cinema-panel legend { padding: 0 4px; font-size: 12px; color: #d9e9e7; }
+.cinema-panel .filter-options { margin-bottom: 8px; }
+.cinema-panel .hint { margin: 4px 0; }
+.cinema-scopes { margin-top: 12px; }
+.cinema-scopes summary { cursor: pointer; }
+.cinema-scopes figure { margin: 8px 0 0; }
+.cinema-scopes figcaption { font-size: 12px; margin-bottom: 4px; color: #b8c6ce; }
+.cinema-scopes canvas { display: block; width: 100%; max-width: 272px; border-radius: 6px; }

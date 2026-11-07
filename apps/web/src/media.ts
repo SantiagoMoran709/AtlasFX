@@ -98,6 +98,11 @@ export async function importMedia(
         const ready = waitMedia(el, 'loadeddata');
         el.src = url;
         await ready;
+        if (el.duration === Infinity && /webm/i.test(file.type || name)) {
+          const seeked = waitMedia(el, 'seeked', 4000);
+          el.currentTime = Number.MAX_SAFE_INTEGER;
+          await seeked;
+        }
         if (!Number.isFinite(el.duration) || el.duration <= 0) {
           throw new Error('No se pudo leer la duración del archivo.');
         }

@@ -3,6 +3,7 @@ import type {MediaResource} from './media';
 import {AudioGraph,silentLevels} from './audioGraph';
 import {prepareAudio} from './scheduledAudio';
 import {ChromaRenderer} from './chromaKey';
+import {CinemaRenderer,cinemaGrade} from './cinemaRender';
 
 const MAX_IDLE_MEDIA = 12;
 const IDLE_MEDIA_MS = 2500;
@@ -15,6 +16,8 @@ export class Compositor {
   private graph?:AudioGraph;
   private transitionCanvas?: HTMLCanvasElement;
   private chroma?: ChromaRenderer;
+  private cinema?: CinemaRenderer;
+  private grade = '';
   private scheduledBuffers?:Map<string,AudioBuffer>;
   private failed = new Set<string>();
   private lastActive=new Set<string>();private pendingSeek=new Set<string>();private previousTime=0;private sourceMapping=new Map<string,string>();
@@ -32,6 +35,7 @@ export class Compositor {
   monitorVolume(value:number){this.graph?.setMonitorVolume(value);}
   render(project: Project, resources: Record<string, MediaResource>, at: number, playing: boolean) {
     const ctx = this.canvas.getContext('2d')!;
+    this.grade=cinemaGrade(project.settings.cinema);
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     const active = new Map(activeClips(project, at).map(layer => [layer.track.id, layer.clip]));
@@ -71,6 +75,9 @@ export class Compositor {
         }
       }
       if (current) this.drawClip(ctx, current, at, project.settings.height);
+    }
+    if(project.settings.cinema){
+      (this.cinema??=new CinemaRenderer()).draw(ctx,project.settings.cinema,at);
     }
     const existing = new Set(project.tracks.flatMap(t => t.clips.map(c => c.id)));
     const idle: {id: string; used: number}[] = [];
@@ -160,7 +167,8 @@ export class Compositor {
     ctx.save();
     ctx.globalAlpha = weight * clip.opacity * fadeEnvelope(clip, localTime);
     const color = clip.color;
-    ctx.filter = color ? `brightness(${2 ** color.exposure}) contrast(${color.contrast}) saturate(${color.saturation}) hue-rotate(${color.hue}deg)` : 'none';
+    const correction = color ? `brightness(${2 ** color.exposure}) contrast(${color.contrast}) saturate(${color.saturation}) hue-rotate(${color.hue}deg)` : '';
+    ctx.filter = [correction,this.grade].filter(Boolean).join(' ') || 'none';
     if (clip.title) {
       const title = clip.title;
       const size = title.size * height / projectHeight * clip.scale;
@@ -183,7 +191,15 @@ export class Compositor {
       const w = drawable instanceof HTMLVideoElement ? drawable.videoWidth : drawable.naturalWidth;
       const h = drawable instanceof HTMLVideoElement ? drawable.videoHeight : drawable.naturalHeight;
       const scale = Math.min(width / w, height / h) * clip.scale;
-      ctx.translate(width / 2, height / 2);
+      if (clip.blurBackground) {
+        const blur = Math.max(4, Math.min(width, height) * .025);
+        const fill = Math.max((width + blur * 6) / w, (height + blur * 6) / h);
+        ctx.save();
+        ctx.filter = `blur(${blur}px) brightness(.72)`;
+        ctx.drawImage(drawable, (width - w * fill) / 2, (height - h * fill) / 2, w * fill, h * fill);
+        ctx.restore();
+      }
+      ctx.translate(width * (clip.x ?? 50) / 100, height * (clip.y ?? 50) / 100);
       ctx.rotate(clip.rotation * Math.PI / 180);
       const frame = clip.chromaKey?.enabled
         ? (this.chroma ??= new ChromaRenderer()).render(drawable, w, h, scale, clip.chromaKey)
@@ -196,6 +212,16 @@ export class Compositor {
   private drawTransition(ctx: CanvasRenderingContext2D, cut: NonNullable<ReturnType<typeof transitionNear>>, at: number, projectHeight: number) {
     if (!this.drawable(cut.from.id) || !this.drawable(cut.to.id)) return false;
     const {width, height} = this.canvas;
+    if(cut.transition.kind==='dip'||cut.transition.kind==='flash'){
+      const flash=cut.transition.kind==='flash';
+      this.drawClip(ctx,cut.progress<.5?cut.from:cut.to,at,projectHeight);
+      ctx.save();
+      ctx.fillStyle=flash?'#fff2df':'#000';
+      ctx.globalAlpha=Math.sin(Math.PI*cut.progress)**2;
+      ctx.fillRect(0,0,width,height);
+      ctx.restore();
+      return true;
+    }
     if (cut.transition.kind === 'wipe') {
       const boundary = Math.round(width * cut.progress);
       for (const [clip, x, w] of [[cut.to, 0, boundary], [cut.from, boundary, width - boundary]] as const) {
@@ -220,5 +246,5 @@ export class Compositor {
     return true;
   }
   private release(id:string){const el=this.elements.get(id);if(el instanceof HTMLMediaElement){el.pause();el.removeAttribute('src');el.load();}this.graph?.release(id);this.elements.delete(id);this.urls.delete(id);this.lastUsed.delete(id);this.pendingSeek.delete(id);this.sourceMapping.delete(id);}
-  dispose(){for(const id of this.elements.keys())this.release(id);this.graph?.dispose();this.chroma?.dispose();}
+  dispose(){for(const id of this.elements.keys())this.release(id);this.graph?.dispose();this.chroma?.dispose();this.cinema?.dispose();}
 }

@@ -1,6 +1,7 @@
 import { edit, type Clip, type Project, type Time, type Track } from './index';
 
-export type TransitionKind = 'dissolve' | 'wipe';
+const TRANSITION_KINDS = ['dissolve','wipe','dip','flash'] as const;
+export type TransitionKind = (typeof TRANSITION_KINDS)[number];
 export interface Transition {
   from: string;
   to: string;
@@ -104,7 +105,7 @@ export function validateTransitions(project: Project, track: Track) {
       !pair ||
       !visualPair(project, track, pair.from, pair.to) ||
       seen.has(transition.from) ||
-      (transition.kind !== 'dissolve' && transition.kind !== 'wipe') ||
+      !TRANSITION_KINDS.includes(transition.kind) ||
       !Number.isSafeInteger(transition.duration) ||
       transition.duration <= 0 ||
       transition.duration > Math.min(pair.from.duration, pair.to.duration)

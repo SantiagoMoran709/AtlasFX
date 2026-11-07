@@ -1,4 +1,4 @@
-import {endTime,SECOND,type Project} from '@corte/core';
+import {cinemaHeight,endTime,SECOND,type Project} from '@corte/core';
 import {Compositor} from './engine';
 import type {MediaResource} from './media';
 export const formats=()=>typeof MediaRecorder==='undefined'?[]:[
@@ -16,14 +16,23 @@ export async function exportVideo(project:Project,resources:Record<string,MediaR
   const duration=endTime(project);if(!duration)throw new Error('Agrega clips antes de exportar.');
   if(Object.keys(project.assets).some(id=>!project.assets[id].generated&&project.tracks.some(t=>t.clips.some(c=>c.assetId===id))&&!resources[id]))throw new Error('Reubica los medios faltantes antes de exportar.');
   const canvas=document.createElement('canvas');canvas.width=options.width;canvas.height=options.height;
+  const cinema=project.settings.cinema;
+  const visible=cinema?.framing==='crop'?cinemaHeight(options.width,options.height,cinema.ratio):options.height;
+  const cropped=visible<options.height?document.createElement('canvas'):undefined;
+  if(cropped){cropped.width=options.width;cropped.height=visible;}
+  const cropContext=cropped?.getContext('2d');
+  const render=(at:number,playing:boolean)=>{
+    engine.render(project,resources,at,playing);
+    cropContext?.drawImage(canvas,0,Math.floor((options.height-visible)/2),options.width,visible,0,0,options.width,visible);
+  };
   const engine=new Compositor(canvas);let stream:MediaStream|undefined;let recorder:MediaRecorder|undefined;let frame=0;
   try{
-    const audio=await engine.connectAudio();const scheduled=await engine.prepareExportAudio(project,resources,signal);if(!scheduled)onNotice?.('Este proyecto usa audio en streaming por su tamaño o códec. Puede presentar cortes: revisa el archivo exportado antes de compartirlo.');stream=canvas.captureStream(options.fps);audio.getAudioTracks().forEach(t=>stream!.addTrack(t));
+    const audio=await engine.connectAudio();const scheduled=await engine.prepareExportAudio(project,resources,signal);if(!scheduled)onNotice?.('Este proyecto usa audio en streaming por su tamaño o códec. Puede presentar cortes: revisa el archivo exportado antes de compartirlo.');stream=(cropped??canvas).captureStream(options.fps);audio.getAudioTracks().forEach(t=>stream!.addTrack(t));
     recorder=new MediaRecorder(stream,{mimeType:options.mime,videoBitsPerSecond:options.bitrate,audioBitsPerSecond:192000});
     const chunks:Blob[]=[];recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
-    engine.render(project,resources,0,false);
+    render(0,false);
     // Warm up browser media decoders before the recorder's clock starts.
-    await new Promise<void>(resolve=>setTimeout(resolve,700));engine.render(project,resources,0,false);
+    await new Promise<void>(resolve=>setTimeout(resolve,700));render(0,false);
     if(signal.aborted)throw new DOMException('Exportación cancelada','AbortError');
     return await new Promise<ExportResult>((resolve,reject)=>{
       let canceled=false;let failure:Error|undefined;
@@ -43,12 +52,18 @@ export async function exportVideo(project:Project,resources:Record<string,MediaR
           firstRenderGap??=previousTime/SECOND;
         }
         previousTime=at;
-        engine.render(project,resources,at,true);
+        if(at>=duration){recorder!.stop();return;}
+        try {
+          render(at,true);
+        } catch(error) {
+          failure=error instanceof Error?error:new Error(String(error));
+          recorder!.stop();
+          return;
+        }
         if(at-lastProgressTime>=SECOND/10){
           lastProgressTime=at;
           onProgress(at/duration);
         }
-        if(at>=duration){recorder!.stop();return;}
         frame=requestAnimationFrame(tick);
       };
       tick();

@@ -4,6 +4,3 @@ packages:
 allowBuilds:
   esbuild: true
   electron: true
-  onnxruntime-node: false
-  protobufjs: false
-  sharp: false
