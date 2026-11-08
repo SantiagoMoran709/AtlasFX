@@ -4,7 +4,7 @@ Editor de video multipista para web y escritorio. Incluye interfaz en español, 
 
 ## Descargar y abrir en Windows x64
 
-Comparte el ZIP `AtlasFX-0.1.0-Windows-x64.zip` de la carpeta `output`.
+Descarga el ZIP **AtlasFX-0.1.0-Windows-x64.zip** desde [GitHub Releases](https://github.com/SantiagoMoran709/AtlasFX/releases/latest). La opción **Code → Download ZIP** descarga el código fuente.
 En el equipo de destino, extrae todo el ZIP y abre `AtlasFX/AtlasFX.exe`.
 El paquete incluye Electron y el editor compilado y funciona sin instalar Node.js o pnpm.
 Conserva juntos los archivos de la carpeta extraída.
