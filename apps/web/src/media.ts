@@ -4,6 +4,8 @@ import { readMp4Metadata } from './mp4Metadata';
 export interface MediaResource {
   url: string;
   thumbnail?: string;
+  videoPreview?: string;
+  legacyFirstFrame?: string;
   hasAudio?: boolean;
   blob: Blob;
 }
@@ -45,8 +47,40 @@ function thumbnail(frame: CanvasImageSource, width: number, height: number) {
   return canvas.toDataURL('image/jpeg', 0.7);
 }
 
+export function videoThumbnailSignatures(
+  assets:Record<string,Asset>,
+  resources:Record<string,MediaResource>,
+):Set<string>{
+  const signatures=new Set<string>();
+  for(const asset of Object.values(assets)){
+    if(asset.kind!=='video')continue;
+    const resource=resources[asset.id];
+    for(const url of [resource?.videoPreview,resource?.legacyFirstFrame]){
+      if(url)signatures.add(url.slice(url.indexOf(',')+1));
+    }
+  }
+  return signatures;
+}
+
+export function isLegacyThumbnailName(name:string){
+  return /^download(?: ?\(\d+\))?\.jpe?g$/i.test(name);
+}
+
+export async function isVideoThumbnailCopy(name:string,blob:Blob,signatures:Set<string>){
+  if(!isLegacyThumbnailName(name))return false;
+  const encodedLength=Math.ceil(blob.size/3)*4;
+  if(![...signatures].some(signature=>signature.length===encodedLength))return false;
+  const buffer=await blob.arrayBuffer().catch(()=>undefined);
+  if(!buffer)return false;
+  const data=new Uint8Array(buffer);
+  let binary='';
+  for(const byte of data)binary+=String.fromCharCode(byte);
+  return signatures.has(btoa(binary));
+}
+
 export async function importMedia(
   file: File,
+  checkLegacyThumbnails = false,
 ): Promise<{ asset: Asset; resource: MediaResource }> {
   const name = file.name;
   const kind: Kind =
@@ -82,6 +116,8 @@ export async function importMedia(
     };
     if (metadata) asset.metadata = metadata;
     let preview: string | undefined;
+    let videoPreview: string | undefined;
+    let legacyFirstFrame: string | undefined;
     if (asset.kind === 'image') {
       const image = new Image();
       image.src = url;
@@ -110,15 +146,16 @@ export async function importMedia(
         if (el instanceof HTMLVideoElement && el.videoWidth && el.videoHeight) {
           asset.width = el.videoWidth;
           asset.height = el.videoHeight;
-          preview = thumbnail(el, asset.width, asset.height);
+          videoPreview = thumbnail(el, asset.width, asset.height);
+          if (checkLegacyThumbnails) legacyFirstFrame = videoPreview;
           if (el.duration >= 0.5) {
-            const target = waitMedia(el, 'seeked', 2000);
+            const seeked = waitMedia(el, 'seeked', 2000);
             el.currentTime = el.duration * 0.1;
             try {
-              await target;
-              preview = thumbnail(el, asset.width, asset.height);
+              await seeked;
+              videoPreview = thumbnail(el, asset.width, asset.height);
             } catch {
-              // Keep the first frame if the thumbnail seek cannot finish.
+              // Keep the first frame if seeking fails.
             }
           }
         }
@@ -132,6 +169,8 @@ export async function importMedia(
       resource: {
         url,
         thumbnail: preview,
+        videoPreview,
+        legacyFirstFrame,
         blob: file,
         hasAudio: metadata?.hasAudio,
       },

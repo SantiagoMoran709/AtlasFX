@@ -1,3 +1,4 @@
+import {useEffect} from 'react';
 import {CINEMA_RATIOS,DEFAULT_CINEMA,DEFAULT_GRADE,cinemaHeight,edit,type CinemaGrade,type CinemaSettings,type Project} from '@corte/core';
 import {Parameter} from './Controls';
 import {useEditor} from './store';
@@ -18,30 +19,74 @@ const gradeChannels=[
   {key:'gain',label:'Luces',min:.8,max:1.2},
 ] as const;
 
-export function CinemaPanel({project,guide,setGuide,disabled,source}:{
-  project:Project; guide:CinemaGuide; setGuide:(guide:CinemaGuide)=>void; disabled:boolean;
-  source:React.RefObject<HTMLCanvasElement>;
-}){
+
+function useCinema(project:Project){
   const {apply}=useEditor();
   const settings=project.settings.cinema??DEFAULT_CINEMA;
-  const grade=settings.grade??DEFAULT_GRADE;
   const update=(values:Partial<CinemaSettings>)=>apply(project=>edit(project,draft=>{
     draft.settings.cinema={...DEFAULT_CINEMA,...draft.settings.cinema,...values};
   }));
-  const updateGrade=(values:Partial<CinemaGrade>)=>update({grade:{...grade,...values}});
+  return {settings,update};
+}
+
+export function CinemaPanel({project,disabled,onPreview}:{
+  project:Project;disabled:boolean;onPreview:(value?:CinemaSettings)=>void;
+}){
+  const {settings,update}=useCinema(project);
+  useEffect(()=>()=>onPreview(),[onPreview,project,disabled]);
+  const preview=(values:Partial<CinemaSettings>)=>{if(!disabled)onPreview({...settings,...values});};
+  const commit=(values:Partial<CinemaSettings>)=>{onPreview();update(values);};
+  const interaction=(values:Partial<CinemaSettings>)=>({
+    onPointerEnter:()=>preview(values), onPointerLeave:()=>onPreview(),
+    onFocus:()=>preview(values), onBlur:()=>onPreview(),
+    onClick:()=>commit(values),
+  });
+  const neutral={look:'neutral',grade:undefined,intensity:1,grain:0,vignette:0,lightLeak:0} as const;
+  return <div className="cinema-panel">
+    <fieldset disabled={disabled}>
+      <legend>Looks cinematográficos · todo el proyecto</legend>
+      <p className="hint">Pasa el cursor o enfoca un look para previsualizarlo. Haz clic para aplicarlo.</p>
+      <div className="filter-options">
+        <button type="button" aria-pressed={settings.look==='neutral'&&!settings.grade} {...interaction(neutral)}>Sin look</button>
+        {cinemaPresets.map(preset=><button key={preset.settings.look} type="button" aria-pressed={settings.look===preset.settings.look}
+          {...interaction(preset.settings)}>{preset.label}</button>)}
+        <button type="button" aria-pressed={settings.look==='clean'} {...interaction({...neutral,look:'clean',vignette:.16})}>Cine limpio</button>
+      </div>
+      <Parameter label="Intensidad del look" min={0} max={100} unit=" %" value={settings.intensity*100}
+        onPreview={value=>value===undefined?onPreview():preview({intensity:value/100})} onCommit={value=>commit({intensity:value/100})}/>
+      <Parameter label="Grano" min={0} max={100} unit=" %" value={settings.grain*100} onCommit={value=>commit({grain:value/100})}/>
+      <Parameter label="Viñeta" min={0} max={100} unit=" %" value={settings.vignette*100} onCommit={value=>commit({vignette:value/100})}/>
+      <Parameter label="Fuga de luz" min={0} max={100} unit=" %" value={settings.lightLeak*100} onCommit={value=>commit({lightLeak:value/100})}/>
+    </fieldset>
+    <fieldset disabled={disabled}>
+      <legend>Bloom · todo el proyecto</legend>
+      <p className="hint">Añade un halo a las altas luces y se puede combinar con cualquier look.</p>
+      <div className="filter-options">
+        <button type="button" aria-pressed={!!settings.bloom} {...interaction({bloom:settings.bloom?0:.25})}>
+          {settings.bloom?'Quitar Bloom':'Activar Bloom'}
+        </button>
+      </div>
+      <Parameter label="Intensidad de Bloom" min={0} max={100} unit=" %" value={(settings.bloom??0)*100}
+        onPreview={value=>value===undefined?onPreview():preview({bloom:value/100})} onCommit={value=>commit({bloom:value/100})}/>
+    </fieldset>
+  </div>;
+}
+
+export function CinemaFraming({project,guide,setGuide,disabled}:{
+  project:Project;guide:CinemaGuide;setGuide:(value:CinemaGuide)=>void;disabled:boolean;
+}){
+  const {settings,update}=useCinema(project);
   const {width,height}=project.settings;
   const visible=cinemaHeight(width,height,settings.ratio);
-  return <div className="cinema-panel">
-    <p className="hint">El look y el encuadre se aplican a todo el proyecto.</p>
-    <fieldset disabled={disabled}>
-      <legend>Formato y composición</legend>
+  return <fieldset disabled={disabled}>
+      <legend>Encuadre del proyecto</legend>
       <label className="property-field">Relación de aspecto
         <select value={settings.ratio} onChange={event=>update({ratio:Number(event.target.value) as CinemaSettings['ratio']})}>
           <option value={0}>Original</option>
           {CINEMA_RATIOS.map(ratio=><option value={ratio} key={ratio}>{ratio.toFixed(2)}:1</option>)}
         </select>
       </label>
-      <label className="property-field">Encuadre de exportación
+      <label className="property-field">Salida en formato original
         <select disabled={!settings.ratio} value={settings.framing} onChange={event=>update({framing:event.target.value as CinemaSettings['framing']})}>
           <option value="bars">Barras sobre la imagen</option>
           <option value="crop">Recorte panorámico</option>
@@ -56,23 +101,17 @@ export function CinemaPanel({project,guide,setGuide,disabled,source}:{
           <option value="center">Centro</option><option value="safe">Márgenes seguros</option>
         </select>
       </label>
-    </fieldset>
-    <fieldset disabled={disabled}>
-      <legend>Look y textura</legend>
-      <div className="filter-options">
-        <button type="button" onClick={()=>update({look:'neutral',grade:undefined,intensity:1,grain:0,vignette:0,lightLeak:0})}>Sin look</button>
-        {cinemaPresets.map(preset=><button key={preset.settings.look} type="button" aria-pressed={settings.look===preset.settings.look}
-          onClick={()=>update(preset.settings)}>{preset.label}</button>)}
-        <button type="button" aria-pressed={settings.look==='clean'} onClick={()=>update({
-          look:'clean',grade:undefined,intensity:1,grain:0,vignette:.16,lightLeak:0,
-        })}>Cine limpio</button>
-      </div>
-      <Parameter label="Intensidad del color" min={0} max={100} unit=" %" value={settings.intensity*100} onCommit={value=>update({intensity:value/100})}/>
-      <Parameter label="Grano" min={0} max={100} unit=" %" value={settings.grain*100} onCommit={value=>update({grain:value/100})}/>
-      <Parameter label="Viñeta" min={0} max={100} unit=" %" value={settings.vignette*100} onCommit={value=>update({vignette:value/100})}/>
-      <Parameter label="Fuga de luz" min={0} max={100} unit=" %" value={settings.lightLeak*100} onCommit={value=>update({lightLeak:value/100})}/>
-      <details>
-        <summary>Ajuste fino del color</summary>
+    </fieldset>;
+}
+
+export function CinemaCorrection({project,source,disabled}:{
+  project:Project;source:React.RefObject<HTMLCanvasElement>;disabled:boolean;
+}){
+  const {settings,update}=useCinema(project);
+  const grade=settings.grade??DEFAULT_GRADE;
+  const updateGrade=(values:Partial<CinemaGrade>)=>update({grade:{...grade,...values}});
+  return <details className="inspector-grade">
+        <summary>Corrección de color del proyecto</summary><fieldset disabled={disabled}>
         {gradeFields.map(({key,...field})=><Parameter key={key} {...field}
           value={grade[key]} onCommit={value=>updateGrade({[key]:value})}/>)}
         {gradeChannels.map(({key,label,min,max})=><fieldset key={key}>
@@ -84,10 +123,7 @@ export function CinemaPanel({project,guide,setGuide,disabled,source}:{
               updateGrade({[key]:channels});
             }}/>)}
         </fieldset>)}
-      </details>
-    </fieldset>
-    <CinemaScopes source={source}/>
-  </div>;
+      </fieldset><CinemaScopes source={source}/></details>;
 }
 
 export function CinemaGuides({guide,project}:{guide:CinemaGuide;project:Project}){

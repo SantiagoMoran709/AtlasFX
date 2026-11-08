@@ -1,13 +1,13 @@
-import {useCallback,useEffect,useRef,useState} from 'react';
+import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {Film,Music2,Image as ImageIcon,FolderOpen,Upload,Plus,Play,Pause,SkipBack,SkipForward,Maximize,Download,ChevronRight,Search,Save,House,X,Check,LoaderCircle,Clapperboard,Link2,AlertCircle,Volume2,VolumeX} from 'lucide-react';
-import {createProject,createClip,addTitle,canDetachAudio,detachAudio,addClip,createTrack,edit,findClip,splitClip,deleteClip,endTime,parseProject,serialize,SECOND,frameToTime,timeToFrame,duplicateClip,rippleDelete,closeGaps,trimAt,joinNext,copyClip,pasteClip,moveClip,trimClip,setClipProps,uid,type Clip,type ClipClipboard,type Project,type Kind} from '@corte/core';
+import {addAudioTrack,addVideoTrack,deleteTrack,createProject,createClip,addTitle,canDetachAudio,detachAudio,addClip,createTrack,edit,findClip,splitClip,deleteClip,endTime,parseProject,serialize,SECOND,frameToTime,timeToFrame,duplicateClip,rippleDelete,closeGaps,trimAt,joinNext,copyClip,pasteClip,moveClip,trimClip,setClipProps,uid,type CinemaSettings,type TitlePreset,type Clip,type ClipClipboard,type Project,type Kind} from '@corte/core';
 import {Timeline,timecode} from './Timeline';
 import {DEFAULT_TIMELINE_ZOOM,stepTimelineZoom} from './timelineZoom';
 import {Inspector} from './Inspector';
 import {TransitionDialog} from './TransitionDialog';
 import {AudioMixer,MasterMeter} from './AudioMixer';
-import {ColorPanel} from './ColorPanel';
-import {CinemaPanel,CinemaGuides,type CinemaGuide} from './CinemaPanel';
+import {QuickColorFilters} from './ColorPanel';
+import {CinemaPanel,CinemaFraming,CinemaGuides,type CinemaGuide} from './CinemaPanel';
 import {ChromaControls} from './ChromaControls';
 import {MenuBar,type EditorMenu} from './MenuBar';
 import {WorkspaceDialog,type DialogMode} from './WorkspaceDialog';
@@ -18,11 +18,14 @@ import {SourceMonitor} from './SourceMonitor';
 import {ProjectBrowser} from './ProjectBrowser';
 import {loadViewPreferences,saveViewPreferences} from './preferences';
 import {useEditor} from './store';
-import {importMedia,type MediaResource} from './media';
-import {Compositor} from './engine';
+import {importMedia,isLegacyThumbnailName,isVideoThumbnailCopy,videoThumbnailSignatures,type MediaResource} from './media';
+import {Compositor,type ClipColorPreview} from './engine';
 import * as storage from './storage';
-import {exportVideo,formats} from './exporter';
+import {exportVideo,formats,exportFrames,exportSourceSize,type ExportFit,type ExportFrame} from './exporter';
 import {RenderPreview,type RenderReview} from './RenderPreview';
+import {ExportFramingPreview} from './ExportFramingPreview';
+import {TextPresets} from './TextPresets';
+import {SubtitleDialog} from './SubtitleDialog';
 
 const errorText=(e:unknown)=>e instanceof Error?e.message:String(e);
 const resolutionOptions=[{label:'1080p · Full HD',width:1920,height:1080},{label:'720p · HD',width:1280,height:720},{label:'480p · Compacto',width:854,height:480}];
@@ -31,14 +34,27 @@ export function App(){
   const [resources,setResources]=useState<Record<string,MediaResource>>({});const [playing,setPlaying]=useState(false);const [zoom,setZoom]=useState(DEFAULT_TIMELINE_ZOOM);
   const [tab,setTab]=useState<'all'|Kind>('all');const [query,setQuery]=useState('');const [busy,setBusy]=useState(false);const [saved,setSaved]=useState('Guardando…');const [initialized,setInitialized]=useState(false);
   const [home,setHome]=useState(true);const [createOnHome,setCreateOnHome]=useState(false);const [recent,setRecent]=useState<Project[]>([]);const [exportOpen,setExportOpen]=useState(false);const [progress,setProgress]=useState<number|null>(null);
+  const [exportFrameId,setExportFrameId]=useState('project');
+  const [exportFit,setExportFit]=useState<ExportFit>();
+  const exportFrame=exportFrames.find(frame=>frame.id===exportFrameId);
+  const frame=useMemo<ExportFrame|undefined>(()=>exportFrame?{...exportFrame,fit:exportFit??exportFrame.fit}:undefined,[exportFrame,exportFit]);
   const [exportResolution,setExportResolution]=useState(0);const [exportFps,setExportFps]=useState(30);const [exportQuality,setExportQuality]=useState(12_000_000);const [exportFormat,setExportFormat]=useState(0);
+  const exportSize=useMemo(()=>exportSourceSize(p,resolutionOptions[exportResolution],frame),[p,exportResolution,frame]);
   const [renderReview,setRenderReview]=useState<RenderReview>();
   const [exportNotice,setExportNotice]=useState('');const [exportName,setExportName]=useState(p.name);const [success,setSuccess]=useState('');
   const [transitionSelection,setTransitionSelection]=useState<string>();
   const [sourceId,setSourceId]=useState<string>();const [libraryVisible,setLibraryVisible]=useState(true);const [dualView,setDualView]=useState(()=>loadViewPreferences().dualMonitor);
   const importedAssets=Object.values(p.assets).filter(asset=>!asset.generated);
   const sourceAsset=p.assets[sourceId??'']??importedAssets[0];
-  const previousMonitorGain=useRef(1);const [viewerZoom,setViewerZoom]=useState<'fit'|number>('fit');const [monitorGain,setMonitorGain]=useState(1);const [dockTab,setDockTab]=useState<'inspector'|'audio'|'color'|'chroma'|'cinema'>('inspector');const [cinemaGuide,setCinemaGuide]=useState<CinemaGuide>('none');const [metersVisible,setMetersVisible]=useState(true);const [workspaceDialog,setWorkspaceDialog]=useState<DialogMode>();
+  const previousMonitorGain=useRef(1);const [viewerZoom,setViewerZoom]=useState<'fit'|number>('fit');const [monitorGain,setMonitorGain]=useState(1);const [dockTab,setDockTab]=useState<'inspector'|'audio'|'effects'|'transform'>('inspector');const [cinemaGuide,setCinemaGuide]=useState<CinemaGuide>('none');const [metersVisible,setMetersVisible]=useState(true);const [workspaceDialog,setWorkspaceDialog]=useState<DialogMode>();
+  const [effectsGroup,setEffectsGroup]=useState<'color'|'chroma'>('color');
+  const showEffects=(group:'color'|'chroma'='color')=>{setEffectsGroup(group);setDockTab('effects');};
+  const clipColorPreview=useRef<ClipColorPreview>();
+  const previewClipColor=useCallback((value?:ClipColorPreview)=>{clipColorPreview.current=value;},[]);
+  const cinemaPreview=useRef<CinemaSettings>();
+  const previewCinema=useCallback((value?:CinemaSettings)=>{cinemaPreview.current=value;},[]);
+  const [trackToDelete,setTrackToDelete]=useState<string>();
+  const [subtitleOpen,setSubtitleOpen]=useState(false);
   const [contentSection,setContentSection]=useState<ContentSection>();const [looping,setLooping]=useState(false);const [hasClipboard,setHasClipboard]=useState(false);const clipboard=useRef<ClipClipboard>();
   const fileInput=useRef<HTMLInputElement>(null);const projectInput=useRef<HTMLInputElement>(null);const relinkInput=useRef<HTMLInputElement>(null);const relinkId=useRef<string>();
   const canvas=useRef<HTMLCanvasElement>(null);const playerWrap=useRef<HTMLDivElement>(null);const lowerWorkspace=useRef<HTMLDivElement>(null);const playhead=useRef<HTMLDivElement>(null);const timeLabel=useRef<HTMLSpanElement>(null);
@@ -46,19 +62,95 @@ export function App(){
   const fitViewer=viewerZoom==='fit';
   const canvasScale=fitViewer?Math.min(viewportSize.width/p.settings.width,viewportSize.height/p.settings.height):viewerZoom;
   const displaySize={width:p.settings.width*canvasScale,height:p.settings.height*canvasScale};
+  const assetDragActive=useRef(false);
   const timeRef=useRef(0);const stateRef=useRef({p,resources,playing,zoom,monitorGain,looping,exportOpen});stateRef.current={p,resources,playing,zoom,monitorGain,looping,exportOpen};const engine=useRef<Compositor>();const abort=useRef<AbortController>();const generation=useRef(0);const booted=useRef(false);const saveQueue=useRef<Promise<unknown>>(Promise.resolve());
   const availableFormats=formats();const duration=endTime(p);const clip=selected?findClip(p,selected):undefined;
   const keyedClip=clip&&!clip.audioOnly&&p.assets[clip.assetId].kind!=='audio'&&!p.assets[clip.assetId].generated?clip:undefined;
-  const seek=useCallback((at:number)=>{setPlaying(false);timeRef.current=Math.max(0,Math.min(endTime(stateRef.current.p),Math.round(at)));},[]);
-  const stop=useCallback(()=>setPlaying(false),[]);
-  const toggle=useCallback(()=>{if(progress!==null)return;if(!endTime(stateRef.current.p)){message('Agrega un medio a la línea de tiempo para reproducir.');return;}if(timeRef.current>=endTime(stateRef.current.p))timeRef.current=0;void engine.current?.startPreviewAudio().catch(e=>message(errorText(e)));setPlaying(v=>!v);},[progress,message]);
+  const pendingPlayback=useRef<symbol>();
+  const stop=useCallback(()=>{
+    pendingPlayback.current=undefined;
+    setPlaying(false);
+  },[]);
+  const seek=useCallback((at:number)=>{
+    stop();
+    timeRef.current=Math.max(0,Math.min(endTime(stateRef.current.p),Math.round(at)));
+  },[stop]);
+  const play=useCallback(async()=>{
+    if(progress!==null||pendingPlayback.current||stateRef.current.playing)return;
+    const project=stateRef.current.p;
+    const end=endTime(project);
+    if(!end){
+      message('Agrega un medio a la línea de tiempo para reproducir.');
+      return;
+    }
+    const request=Symbol();
+    pendingPlayback.current=request;
+    try{
+      await engine.current?.startPreviewAudio(project);
+      if(pendingPlayback.current!==request)return;
+      if(timeRef.current>=end)timeRef.current=0;
+      setPlaying(true);
+    }catch(error){
+      if(pendingPlayback.current===request)message(errorText(error));
+    }finally{
+      if(pendingPlayback.current===request)pendingPlayback.current=undefined;
+    }
+  },[progress,message]);
+  const toggle=useCallback(()=>{
+    if(stateRef.current.playing||pendingPlayback.current)stop();
+    else void play();
+  },[play,stop]);
+  function removeTrack(id:string,confirmed=false){
+    const project=useEditor.getState().h.present;
+    const track=project.tracks.find(item=>item.id===id);
+    if(!track||track.locked)return;
+    stop();
+    if(track.clips.length&&!confirmed){setTrackToDelete(id);return;}
+    apply(current=>deleteTrack(current,id));
+    if(track.clips.some(item=>item.id===selected))select();
+    setTrackToDelete(undefined);
+  }
+  const deletingTrack=p.tracks.find(track=>track.id===trackToDelete);
   const split=useCallback(()=>{stop();const s=useEditor.getState();if(s.selected)s.apply(d=>splitClip(d,s.selected!,timeRef.current));},[stop]);
   const remove=useCallback(()=>{stop();const s=useEditor.getState();if(s.selected){s.apply(d=>deleteClip(d,s.selected!));s.select();}},[stop]);
   const saveFile=useCallback(()=>{try{storage.download(new Blob([serialize(stateRef.current.p)],{type:'application/json'}),`${stateRef.current.p.name}.vedit`);setSuccess('Proyecto .vedit guardado.');}catch(e){message(errorText(e));}},[message]);
   async function refreshRecent(){try{setRecent(await storage.listProjects());}catch(e){message(`No se pudo leer el almacenamiento: ${errorText(e)}`);}}
   async function loadProject(next:Project,showEditor=true){
     stop();const gen=++generation.current;open(next);seek(0);setResources({});if(showEditor){setHome(false);setCreateOnHome(false);}setBusy(true);
-    try{const loaded:Record<string,MediaResource>={};for(const a of Object.values(next.assets)){if(a.generated)continue;const blob=await storage.loadMedia(a.id);if(gen!==generation.current)return;if(blob){try{const media=await importMedia(new File([blob],a.name,{type:a.mime||blob.type}));loaded[a.id]=media.resource;}catch{/* Missing media can be relinked from the library. */}}}if(gen===generation.current)setResources(loaded);
+    try{
+      const loaded:Record<string,MediaResource>={};
+      const possibleCopies=Object.values(next.assets).filter(asset=>
+        asset.kind==='image'&&isLegacyThumbnailName(asset.name));
+      for(const asset of Object.values(next.assets)){
+        if(asset.generated)continue;
+        const blob=await storage.loadMedia(asset.id);
+        if(gen!==generation.current)return;
+        if(!blob)continue;
+        try{
+          const media=await importMedia(new File([blob],asset.name,{type:asset.mime||blob.type}),possibleCopies.length>0);
+          loaded[asset.id]=media.resource;
+        }catch{/* Missing media can be relinked from the library. */}
+      }
+      if(gen!==generation.current)return;
+      const signatures=videoThumbnailSignatures(next.assets,loaded);
+      const copies:string[]=[];
+      for(const asset of possibleCopies){
+        const resource=loaded[asset.id];
+        if(resource&&await isVideoThumbnailCopy(asset.name,resource.blob,signatures))copies.push(asset.id);
+      }
+      if(gen!==generation.current)return;
+      if(copies.length){
+        const copyIds=new Set(copies);
+        apply(current=>edit(current,draft=>{
+          for(const track of draft.tracks){
+            if(track.clips.some(clip=>copyIds.has(clip.assetId))){
+              track.clips=track.clips.filter(clip=>!copyIds.has(clip.assetId));
+            }
+          }
+          for(const id of copies)delete draft.assets[id];
+        }));
+      }
+      setResources(loaded);
     }catch(e){message(errorText(e));}finally{if(gen===generation.current)setBusy(false);}
   }
   useEffect(()=>{
@@ -81,7 +173,7 @@ export function App(){
       const clock=engine.current?.audioClock();const elapsed=s.playing&&clock!==undefined&&lastAudio!==undefined?Math.max(0,clock-lastAudio)*1000:dt;lastAudio=s.playing?clock:undefined;
       if(s.playing){timeRef.current=Math.min(end,timeRef.current+Math.round(elapsed*1000));if(timeRef.current>=end){if(s.looping&&end>0)timeRef.current=0;else setPlaying(false);}}else if(timeRef.current>end)timeRef.current=end;
       if(canvas.current&&(canvas.current.width!==s.p.settings.width||canvas.current.height!==s.p.settings.height)){canvas.current.width=s.p.settings.width;canvas.current.height=s.p.settings.height;}
-      engine.current?.monitorVolume(s.monitorGain);engine.current?.render(s.p,s.resources,timeRef.current,s.playing);
+      engine.current?.monitorVolume(s.monitorGain);engine.current?.render(s.p,s.resources,timeRef.current,s.playing,cinemaPreview.current,clipColorPreview.current);
       if(timeLabel.current)timeLabel.current.textContent=timecode(timeRef.current,s.p.settings.fps);
       if(playhead.current)playhead.current.style.left=`${timeRef.current/SECOND*s.zoom}px`;
       frame=requestAnimationFrame(tick);
@@ -90,7 +182,7 @@ export function App(){
   useEffect(()=>{if(error){const timer=setTimeout(()=>message(''),8000);return()=>clearTimeout(timer);}},[error,message]);
   useEffect(()=>{if(success){const timer=setTimeout(()=>setSuccess(''),6000);return()=>clearTimeout(timer);}},[success]);
   useEffect(()=>{
-    const onKey=(e:KeyboardEvent)=>{if(progress!==null)return;if(e.key==='Escape'){setHome(false);setExportOpen(false);setRenderReview(undefined);setWorkspaceDialog(undefined);setContentSection(undefined);setTransitionSelection(undefined);return;}if(e.target instanceof HTMLElement&&e.target.closest('input,textarea,select,[contenteditable="true"],.source-monitor'))return;const mod=e.ctrlKey||e.metaKey;
+    const onKey=(e:KeyboardEvent)=>{if(progress!==null||subtitleOpen)return;if(trackToDelete){if(e.key==='Escape')setTrackToDelete(undefined);return;}if(e.key==='Escape'){setHome(false);setExportOpen(false);setRenderReview(undefined);setWorkspaceDialog(undefined);setContentSection(undefined);setTransitionSelection(undefined);return;}if(e.target instanceof HTMLElement&&e.target.closest('input,textarea,select,[contenteditable="true"],.source-monitor'))return;const mod=e.ctrlKey||e.metaKey;
       if(home||exportOpen||workspaceDialog||contentSection||transitionSelection)return;
       if(e.code==='Space'){if((e.target as HTMLElement).closest('button')&&!(e.target as HTMLElement).closest('.timeline-clip'))return;e.preventDefault();toggle();}else if(mod&&e.key.toLowerCase()==='z'){e.preventDefault();stop();if(e.shiftKey)redo();else undo();}
       else if(mod&&e.key.toLowerCase()==='s'){e.preventDefault();if(e.shiftKey)saveFile();else void saveLocal();}
@@ -99,11 +191,11 @@ export function App(){
       else if(mod&&e.altKey&&e.key.toLowerCase()==='s'){e.preventDefault();separateAudio();}
       else if(e.key.toLowerCase()==='s'||(mod&&e.key.toLowerCase()==='b')){e.preventDefault();split();}else if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();if(e.shiftKey)runClip(rippleDelete);else remove();}
       else if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();stop();const fps=stateRef.current.p.settings.fps;seek(frameToTime(timeToFrame(timeRef.current,fps)+(e.key==='ArrowLeft'?-1:1),fps));}
-      else if(e.key.toLowerCase()==='k')stop();else if(e.key.toLowerCase()==='l'){void engine.current?.startPreviewAudio().catch(e=>message(errorText(e)));setPlaying(true);}else if(e.key.toLowerCase()==='j'){stop();seek(timeRef.current-SECOND);}
+      else if(e.key.toLowerCase()==='k')stop();else if(e.key.toLowerCase()==='l')void play();else if(e.key.toLowerCase()==='j'){stop();seek(timeRef.current-SECOND);}
       else if(e.key==='+'||e.key==='=')setZoom(z=>stepTimelineZoom(z,1));else if(e.key==='-')setZoom(z=>stepTimelineZoom(z,-1));
     };window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);
-  },[toggle,stop,undo,redo,saveFile,split,remove,seek,home,exportOpen,progress,workspaceDialog,contentSection,transitionSelection,hasClipboard,p,selected,resources,busy]);
-  async function importFiles(files:FileList|File[],placement?:Placement){
+  },[toggle,play,stop,undo,redo,saveFile,split,remove,seek,home,exportOpen,progress,workspaceDialog,contentSection,transitionSelection,subtitleOpen,trackToDelete,hasClipboard,p,selected,resources,busy]);
+  async function importFiles(files:FileList|File[],placement?:Placement,fromDrop=false){
     if(busy||progress!==null)return;
     stop();setBusy(true);
     const gen=generation.current;
@@ -111,6 +203,11 @@ export function App(){
     try {
       for(const file of Array.from(files)){
         try {
+          if(fromDrop){
+            const current=useEditor.getState().h.present;
+            if(await isVideoThumbnailCopy(file.name,file,videoThumbnailSignatures(current.assets,stateRef.current.resources)))continue;
+            if(gen!==generation.current)return;
+          }
           const {asset,resource}=await importMedia(file);
           if(gen!==generation.current){URL.revokeObjectURL(resource.url);return;}
           await storage.saveMedia(asset.id,file);
@@ -159,19 +256,7 @@ export function App(){
     setContentSection(undefined);
   }
   function addLowerThird(name:string,role:string){
-    const id=uid();
-    apply(d=>{
-      const next=addTitle(d,timeRef.current,id);
-      const title=findClip(next,id)!.title!;
-      return setClipProps(next,id,{
-        title:{...title,text:role?name+'\n'+role:name,x:30,y:82,outline:true,
-          size:Math.max(12,Math.round(next.settings.height*.042))},
-        fadeIn:350000,fadeOut:350000,
-      });
-    });
-    select(id);
-    setDockTab('inspector');
-    setContentSection(undefined);
+    insertTitle('lowerThird',{text:name,roleText:role});
   }
   function removeLibraryAsset(assetId:string){
     apply(d=>{
@@ -190,14 +275,15 @@ export function App(){
       message('No se pudo guardar la preferencia del visor.');
     }
   }
-  function insertTitle(kind: 'title'|'subtitle' = 'title') {
+  function insertTitle(kind:TitlePreset='opening',content?:{text:string;roleText?:string}) {
     stop();
     const id = uid();
     try {
-      const next = addTitle(useEditor.getState().h.present, timeRef.current, id, kind);
+      const next = addTitle(useEditor.getState().h.present, timeRef.current, id, kind, content);
       apply(() => next);
       select(id);
       setDockTab('inspector');
+      setContentSection(undefined);
     } catch (error) {
       message(errorText(error));
     }
@@ -209,8 +295,8 @@ export function App(){
   }
   async function startExport(){
     if(!availableFormats.length)return;stop();setExportNotice('');abort.current=new AbortController();setProgress(0);
-    try{const resolution=resolutionOptions[exportResolution];const aspect=p.settings.width/p.settings.height;const width=aspect<1?resolution.height:resolution.width;const height=Math.round(width/aspect/2)*2;
-      const result=await exportVideo(p,resources,{width,height,fps:exportFps,bitrate:exportQuality,mime:availableFormats[exportFormat].mime},abort.current.signal,setProgress,setExportNotice);
+    try{
+      const result=await exportVideo(p,resources,{...exportSize,frame,fps:exportFps,bitrate:exportQuality,mime:availableFormats[exportFormat].mime},abort.current.signal,setProgress,setExportNotice);
       setRenderReview({...result,name:`${exportName||p.name}.${availableFormats[exportFormat].extension}`,fps:exportFps});
     }catch(e){if(!(e instanceof DOMException&&e.name==='AbortError'))message(errorText(e));}finally{setProgress(null);}
   }
@@ -250,44 +336,67 @@ export function App(){
       {label:'Cortar clip',shortcut:'Ctrl+X',separator:true,disabled:!clip,action:()=>copySelection(true)},{label:'Copiar clip',shortcut:'Ctrl+C',disabled:!clip,action:()=>copySelection()},{label:'Pegar e insertar',shortcut:'Ctrl+V',disabled:!hasClipboard,action:()=>pasteSelection()},{label:'Pegar y sobrescribir',disabled:!hasClipboard,action:()=>pasteSelection('overwrite')},{label:'Pegar en una pista nueva',disabled:!hasClipboard,action:()=>pasteSelection('overlay')},{label:'Pegar atributos',disabled:!hasClipboard||!clip,action:()=>{const c=clipboard.current?.clip;if(c&&clip)apply(d=>setClipProps(d,clip.id,{volume:c.volume,scale:c.scale,x:c.x,y:c.y,rotation:c.rotation,opacity:c.opacity,color:c.color}));}},
       {label:'Duplicar clip',shortcut:'Ctrl+D',separator:true,disabled:!clip,action:()=>runClip(duplicateClip)},{label:'Eliminar clip',shortcut:'Supr',disabled:!clip,action:remove},{label:'Eliminar y cerrar espacio en pista',shortcut:'Shift+Supr',disabled:!clip,action:()=>runClip(rippleDelete)},{label:'Eliminar espacios vacíos',action:()=>{stop();apply(closeGaps);}},{label:'Cancelar selección',separator:true,action:()=>select()},{label:'Doble visor',separator:true,checked:dualView,action:toggleDualView}]},
     {label:'Recortar',items:[{label:'Seleccionar clip más cercano',action:nearest},{label:'Abrir inspector de recortes',disabled:!clip,action:()=>setDockTab('inspector')},{label:'Recortar inicio hasta el cursor',separator:true,disabled:!clip,action:()=>runClip((d,id)=>trimAt(d,id,timeRef.current,'start'))},{label:'Recortar final hasta el cursor',disabled:!clip,action:()=>runClip((d,id)=>trimAt(d,id,timeRef.current,'end'))},{label:'Mover clip un fotograma a la izquierda',separator:true,disabled:!clip,action:()=>runClip((d,id)=>moveClip(d,id,Math.max(0,findClip(d,id)!.start-frameToTime(1,p.settings.fps))))},{label:'Mover clip un fotograma a la derecha',disabled:!clip,action:()=>runClip((d,id)=>moveClip(d,id,findClip(d,id)!.start+frameToTime(1,p.settings.fps)))},{label:'Deslizar origen un fotograma adelante',disabled:!clip,action:()=>runClip((d,id)=>{const c=findClip(d,id)!;return trimClip(d,id,c.sourceIn+frameToTime(1,p.settings.fps),c.duration);})}]},
-    {label:'Línea de tiempo',items:[{label:'Insertar título',action:()=>insertTitle()},{label:'Transición de video…',disabled:!clip,action:()=>openTransition()},{label:'Dividir clip en el cursor',shortcut:'Ctrl+B',disabled:!clip,action:split},{label:'Unir con el siguiente corte',disabled:!clip,action:()=>runClip(joinNext)},{label:'Insertar espacio…',separator:true,action:()=>showDialog('gap')},{label:'Añadir pista de video',action:()=>apply(d=>edit(d,x=>{x.tracks.unshift(createTrack('video',`Video ${x.tracks.filter(t=>t.kind==='video').length+1}`));}))},{label:'Añadir pista de audio',action:()=>apply(d=>edit(d,x=>{x.tracks.push(createTrack('audio',`Audio ${x.tracks.filter(t=>t.kind==='audio').length+1}`));}))},{label:'Fundido de entrada · 0.5 s',separator:true,disabled:!clip,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{fadeIn:Math.min(500000,clip.duration)}))},{label:'Fundido de salida · 0.5 s',disabled:!clip,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{fadeOut:Math.min(500000,clip.duration)}))},{label:'Quitar fundidos del clip',disabled:!clip,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{fadeIn:0,fadeOut:0}))}]},
-    {label:'Clip',items:[{label:'Separar audio',shortcut:'Ctrl+Alt+S',disabled:!canSeparateAudio(),action:()=>separateAudio()},{label:'Restablecer transformación',disabled:!clip,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{scale:1,x:50,y:50,rotation:0,opacity:1}))},{label:'Silenciar / activar audio del clip',disabled:!clip||!!clip.audioDetached,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{volume:clip.volume?0:1}))},{label:'Añadir medio seleccionado al final',disabled:!sourceAsset,action:()=>sourceAsset&&addToTimeline(sourceAsset.id)}]},
+    {label:'Línea de tiempo',items:[{label:'Insertar título',action:()=>insertTitle()},{label:'Transición de video…',disabled:!clip,action:()=>openTransition()},{label:'Dividir clip en el cursor',shortcut:'Ctrl+B',disabled:!clip,action:split},{label:'Unir con el siguiente corte',disabled:!clip,action:()=>runClip(joinNext)},{label:'Insertar espacio…',separator:true,action:()=>showDialog('gap')},{label:'Añadir pista de video',action:()=>apply(addVideoTrack)},{label:'Añadir pista de audio',action:()=>apply(addAudioTrack)},{label:'Fundido de entrada · 0.5 s',separator:true,disabled:!clip,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{fadeIn:Math.min(500000,clip.duration)}))},{label:'Fundido de salida · 0.5 s',disabled:!clip,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{fadeOut:Math.min(500000,clip.duration)}))},{label:'Quitar fundidos del clip',disabled:!clip,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{fadeIn:0,fadeOut:0}))}]},
+    {label:'Clip',items:[{label:'Separar audio',shortcut:'Ctrl+Alt+S',disabled:!canSeparateAudio(),action:()=>separateAudio()},{label:'Restablecer transformación',disabled:!clip,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{scale:1,scaleX:1,scaleY:1,x:50,y:50,rotation:0,opacity:1}))},{label:'Silenciar / activar audio del clip',disabled:!clip||!!clip.audioDetached,action:()=>clip&&apply(d=>setClipProps(d,clip.id,{volume:clip.volume?0:1}))},{label:'Añadir medio seleccionado al final',disabled:!sourceAsset,action:()=>sourceAsset&&addToTimeline(sourceAsset.id)}]},
     {label:'Efectos',items:[
+      {label:'Voz de Cine y mezcla de audio…',action:()=>setDockTab('audio')},
       ...(Object.keys(CONTENT_SECTIONS) as ContentSection[]).map(section=>({
         label:CONTENT_SECTIONS[section]+'…',
         action:()=>{stop();setContentSection(section);},
       })),
-      {label:'Look cinematográfico…',action:()=>setDockTab('cinema')},
+      {label:'Filtros y looks cinematográficos…',action:()=>showEffects()},
+      {label:'Escala, posición y encuadre…',action:()=>setDockTab('transform')},
+      {label:'Subtítulos automáticos…',action:()=>{stop();setSubtitleOpen(true);}},
       {label:'Insertar subtítulo',action:()=>insertTitle('subtitle')},
       {label:'Editar tipografía',disabled:!clip?.title,action:()=>setDockTab('inspector')},
-      {label:'Filtros y corrección de color…',separator:true,disabled:!clip,action:()=>setDockTab('color')},
-      {label:'Chroma key…',action:()=>setDockTab('chroma')},
+      {label:'Chroma key…',action:()=>showEffects('chroma')},
     ]},
     {label:'Marcar',items:[{label:'Añadir marcador en el cursor',action:addMarker},{label:'Ir al marcador anterior',disabled:!p.markers?.length,action:()=>goMarker(-1)},{label:'Ir al marcador siguiente',disabled:!p.markers?.length,action:()=>goMarker(1)},{label:'Quitar marcador bajo el cursor',disabled:!p.markers?.length,separator:true,action:()=>apply(d=>edit(d,x=>{x.markers=x.markers?.filter(m=>Math.abs(m.time-timeRef.current)>SECOND/p.settings.fps);}))}]},
-    {label:'Ver',items:[{label:'Ajustar imagen al visor',checked:viewerZoom==='fit',action:()=>setViewerZoom('fit')},{label:'Ver al 100 % · píxeles del proyecto',checked:viewerZoom===1,action:()=>setViewerZoom(1)},{label:'Ver al 50 %',checked:viewerZoom===.5,action:()=>setViewerZoom(.5)},{label:'Pantalla completa',action:()=>void playerWrap.current?.requestFullscreen().catch(e=>message(errorText(e)))},{label:'Biblioteca de medios',separator:true,checked:libraryVisible,action:()=>setLibraryVisible(!libraryVisible)},{label:'Mezclador de audio',action:()=>setDockTab('audio')},{label:'Histograma y color',action:()=>setDockTab('color')},{label:'Medidor Master',checked:metersVisible,action:()=>setMetersVisible(!metersVisible)}]},
+    {label:'Ver',items:[{label:'Ajustar imagen al visor',checked:viewerZoom==='fit',action:()=>setViewerZoom('fit')},{label:'Ver al 100 % · píxeles del proyecto',checked:viewerZoom===1,action:()=>setViewerZoom(1)},{label:'Ver al 50 %',checked:viewerZoom===.5,action:()=>setViewerZoom(.5)},{label:'Pantalla completa',action:()=>void playerWrap.current?.requestFullscreen().catch(e=>message(errorText(e)))},{label:'Biblioteca de medios',separator:true,checked:libraryVisible,action:()=>setLibraryVisible(!libraryVisible)},{label:'Mezclador de audio',action:()=>setDockTab('audio')},{label:'Histograma y color',action:()=>setDockTab('inspector')},{label:'Medidor Master',checked:metersVisible,action:()=>setMetersVisible(!metersVisible)}]},
     {label:'Reproducir',items:[{label:playing?'Pausar':'Reproducir',shortcut:'Espacio',action:toggle},{label:'Detener e ir al inicio',action:()=>{stop();seek(0);}},{label:'Fotograma anterior',shortcut:'←',separator:true,action:()=>frameStep(-1)},{label:'Fotograma siguiente',shortcut:'→',action:()=>frameStep(1)},{label:'Corte anterior',action:()=>goEdge(-1)},{label:'Corte siguiente',action:()=>goEdge(1)},{label:'Ir a un tiempo…',action:()=>showDialog('time')},{label:'Reproducir en bucle',checked:looping,separator:true,action:()=>setLooping(!looping)}]}
   ];
   const assets=importedAssets.filter(a=>(tab==='all'||a.kind===tab)&&a.name.toLowerCase().includes(query.toLowerCase()));
   return <div className={`app ${libraryVisible?'':'hide-library'} ${dualView?'':'single-view'}`} onDragStartCapture={e=>{if(e.target instanceof HTMLImageElement)e.preventDefault();}}
+    onDragEndCapture={()=>{assetDragActive.current=false;}}
     onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}}
     onDrop={e=>{
+      const internal=assetDragActive.current||e.dataTransfer.types.includes('asset');
+      assetDragActive.current=false;
       if(!e.dataTransfer.files.length)return;
       e.preventDefault();
-      if(!e.dataTransfer.types.includes('asset'))void importFiles(e.dataTransfer.files);
+      if(!internal)void importFiles(e.dataTransfer.files,undefined,true);
     }}>
     <input type="file" ref={fileInput} hidden multiple accept="video/*,audio/*,image/*" onChange={e=>{if(e.target.files)void importFiles(e.target.files);e.target.value='';}}/>
     <input type="file" ref={projectInput} hidden accept=".vedit,application/json" onChange={async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{const next=parseProject(await file.text());await loadProject(next);}catch(e){message(errorText(e));}}}/>
     <input type="file" ref={relinkInput} hidden accept="video/*,audio/*,image/*" onChange={e=>{const f=e.target.files?.[0];if(f)void relink(f);e.target.value='';}}/>
-    <div className="editing-shell" {...(home||exportOpen||!!workspaceDialog||!!contentSection||!!transitionSelection?{inert:''}:{})}><MenuBar menus={menus} disabled={progress!==null||busy}/>
+    <div className="editing-shell" {...(home||exportOpen||subtitleOpen||!!trackToDelete||!!workspaceDialog||!!contentSection||!!transitionSelection?{inert:''}:{})}><MenuBar menus={menus} disabled={progress!==null||busy}/>
     <header className="app-header"><div className="brand"><div className="brand-mark"><img src={`${import.meta.env.BASE_URL}logo.png`} alt=""/></div><span>AtlasFX</span><span className="beta">ALPHA</span></div><div className="header-divider"/><button className="header-home" title="Proyectos" aria-label="Ver proyectos" disabled={progress!==null} onClick={()=>{stop();void refreshRecent();setHome(true);}}><House size={17}/></button><ChevronRight size={14} className="muted"/><input className="project-title" aria-label="Nombre del proyecto" value={p.name} disabled={progress!==null} maxLength={200} onChange={e=>apply(d=>edit(d,x=>{x.name=e.target.value;}))}/><span className="save-status">{saved==='Guardado'?<Check size={13}/>:<LoaderCircle size={13}/>} {saved}</span><div className="header-right"><button type="button" className="button secondary" disabled={busy||progress!==null} onClick={()=>showDialog('settings')}>Ajustes</button><button className="button secondary" title="Guardar proyecto (Ctrl+S)" disabled={progress!==null} onClick={()=>void saveLocal()}><Save size={15}/><span>Guardar proyecto</span></button><button className="button primary" disabled={!duration||busy||progress!==null} onClick={()=>{stop();setExportName(p.name);setExportOpen(true);}}><Download size={15}/> Exportar video</button></div></header>
     <main className="workspace"><nav className="resource-nav" aria-label="Tipos de medios">{[{id:'all',label:'Medios',icon:FolderOpen},{id:'video',label:'Video',icon:Film},{id:'audio',label:'Audio',icon:Music2},{id:'image',label:'Imagen',icon:ImageIcon}].map(({id,label,icon:Icon})=><button key={id} className={tab===id?'selected':''} onClick={()=>setTab(id as typeof tab)}><Icon size={21}/><span>{label}</span></button>)}</nav>
     <aside className="media-panel"><div className="panel-heading"><span>Biblioteca de medios</span><span className="counter">{importedAssets.length}</span></div><div className="library-content"><button className="button primary import-button" disabled={busy||progress!==null} onClick={()=>fileInput.current?.click()}>{busy?<LoaderCircle className="spin" size={15}/>:<Plus size={16}/>} {busy?'Importando…':'Importar medios'}</button><label className="search-box"><Search size={15}/><input placeholder="Buscar archivos…" aria-label="Buscar archivos" value={query} onChange={e=>setQuery(e.target.value)}/></label><div className="library-title"><span>ARCHIVOS DEL PROYECTO</span><span>{assets.length}</span></div>
-      {assets.length?<div className="asset-grid">{assets.map(a=><div key={a.id} className={`asset-card ${!resources[a.id]?'missing':''} ${sourceAsset?.id===a.id?'source-selected':''}`} tabIndex={0} role="group" aria-label={`Medio ${a.name}`} onClick={()=>setSourceId(a.id)} onKeyDown={e=>{if(e.key==='Enter'&&e.target===e.currentTarget)setSourceId(a.id);}} draggable={!!resources[a.id]&&progress===null} onDragStart={e=>e.dataTransfer.setData('asset',a.id)} onDoubleClick={()=>resources[a.id]&&progress===null&&addToTimeline(a.id)}><div className="asset-preview">{resources[a.id]?.thumbnail?<img src={resources[a.id].thumbnail} alt="" draggable={false}/>:a.kind==='audio'?<Music2 size={25}/>:<Film size={25}/>}<span className="asset-duration">{(a.duration/SECOND).toFixed(1)} s</span>{resources[a.id]?<button className="asset-add" title="Añadir a la línea de tiempo" aria-label={`Añadir ${a.name}`} disabled={progress!==null} onClick={()=>addToTimeline(a.id)}><Plus size={15}/></button>:<button className="relink" title="Reubicar archivo" disabled={busy||progress!==null} onClick={()=>{relinkId.current=a.id;relinkInput.current?.click();}}><Link2 size={14}/> Reubicar</button>}</div><div className="asset-name" title={a.name}>{a.name}</div><span className="asset-meta" title={a.metadata?[a.metadata.videoCodec,a.metadata.audioCodec,a.metadata.hasAudio?'Con audio':'Sin audio'].filter(Boolean).join(' · '):undefined}>{!resources[a.id]?'Medio faltante':a.kind==='image'?'Imagen':a.kind==='audio'?'Audio':'Video'}{a.width?` · ${a.width} × ${a.height}`:''}{a.metadata?.averageFps?` · ${Number(a.metadata.averageFps.toFixed(2))} fps`:''}</span></div>)}</div>:<div className="library-empty"><div className="empty-icon"><Upload size={26}/></div><strong>{query?'Sin resultados':'Todo empieza con una idea'}</strong><p>{query?'Prueba otra búsqueda.':'Importa videos, imágenes o audio. También puedes arrastrarlos a esta ventana.'}</p>{!query&&<span className="file-formats">MP4 · MOV · WEBM · MP3 · PNG · JPG</span>}</div>}
+      {assets.length?<div className="asset-grid">{assets.map(a=><div key={a.id} className={`asset-card ${!resources[a.id]?'missing':''} ${sourceAsset?.id===a.id?'source-selected':''}`} tabIndex={0} role="group" aria-label={`Medio ${a.name}`} onClick={()=>setSourceId(a.id)} onKeyDown={e=>{if(e.key==='Enter'&&e.target===e.currentTarget)setSourceId(a.id);}} draggable={!!resources[a.id]&&progress===null} onDragStart={e=>{if(!e.defaultPrevented){e.dataTransfer.setData('asset',a.id);assetDragActive.current=true;}}} onDoubleClick={()=>resources[a.id]&&progress===null&&addToTimeline(a.id)}><div className="asset-preview"
+        style={resources[a.id]?.videoPreview?{backgroundImage:`url("${resources[a.id].videoPreview}")`}:undefined}>
+        {resources[a.id]?.videoPreview?null:resources[a.id]?.thumbnail?<img src={resources[a.id].thumbnail} alt="" draggable={false}/>:a.kind==='audio'?<Music2 size={25}/>:<Film size={25}/>}<span className="asset-duration">{(a.duration/SECOND).toFixed(1)} s</span>{resources[a.id]?<button className="asset-add" title="Añadir a la línea de tiempo" aria-label={`Añadir ${a.name}`} disabled={progress!==null} onClick={()=>addToTimeline(a.id)}><Plus size={15}/></button>:<button className="relink" title="Reubicar archivo" disabled={busy||progress!==null} onClick={()=>{relinkId.current=a.id;relinkInput.current?.click();}}><Link2 size={14}/> Reubicar</button>}</div><div className="asset-name" title={a.name}>{a.name}</div><span className="asset-meta" title={a.metadata?[a.metadata.videoCodec,a.metadata.audioCodec,a.metadata.hasAudio?'Con audio':'Sin audio'].filter(Boolean).join(' · '):undefined}>{!resources[a.id]?'Medio faltante':a.kind==='image'?'Imagen':a.kind==='audio'?'Audio':'Video'}{a.width?` · ${a.width} × ${a.height}`:''}{a.metadata?.averageFps?` · ${Number(a.metadata.averageFps.toFixed(2))} fps`:''}</span></div>)}</div>:<div className="library-empty"><div className="empty-icon"><Upload size={26}/></div><strong>{query?'Sin resultados':'Todo empieza con una idea'}</strong><p>{query?'Prueba otra búsqueda.':'Importa videos, imágenes o audio. También puedes arrastrarlos a esta ventana.'}</p>{!query&&<span className="file-formats">MP4 · MOV · WEBM · MP3 · PNG · JPG</span>}</div>}
     </div></aside>
-    <section className="player-panel"><div className="viewer-pair"><SourceMonitor asset={sourceAsset} resource={sourceAsset?resources[sourceAsset.id]:undefined} fps={p.settings.fps} timelinePlaying={playing} disabled={progress!==null||busy||!dualView||home||exportOpen||!!workspaceDialog||!!contentSection||!!transitionSelection} onPlay={stop} onAdd={()=>sourceAsset&&addToTimeline(sourceAsset.id)}/><div className="program-viewer"><div className="monitor-heading"><span className="monitor-type">PROGRAMA</span><span className="monitor-filename">{p.name}</span><span className="monitor-resolution">{p.settings.height}p</span></div><div className={`preview-stage ${fitViewer?'fit-view':'pixel-view'}`} ref={playerWrap}><div className="canvas-surface" style={fitViewer?undefined:displaySize}><div className="program-canvas" style={displaySize}><canvas ref={canvas} width={p.settings.width} height={p.settings.height} aria-label="Vista previa del proyecto"/><CinemaGuides guide={cinemaGuide} project={p}/></div></div></div><div className="player-info"><span>Proyecto: {p.settings.width} × {p.settings.height} · {p.settings.fps} fps</span><label className="viewer-zoom">Zoom del visor<select aria-label="Zoom del visor" value={viewerZoom} onChange={e=>setViewerZoom(e.target.value==='fit'?'fit':Number(e.target.value))}><option value="fit">Ajustar</option><option value="0.25">25 %</option><option value="0.5">50 %</option><option value="1">100 % · tamaño real</option><option value="2">200 %</option></select></label></div><div className="player-controls"><div className="time-display"><span ref={timeLabel}>00:00:00:00</span><span className="muted"> / {timecode(duration,p.settings.fps)}</span></div><div className="transport"><button title="Ir al inicio" aria-label="Ir al inicio" onClick={()=>seek(0)} disabled={progress!==null}><SkipBack size={17}/></button><button className="play-button" aria-label={playing?'Pausar':'Reproducir'} title="Reproducir / pausar (Espacio)" disabled={progress!==null} onClick={toggle}>{playing?<Pause size={19} fill="currentColor"/>:<Play size={19} fill="currentColor"/>}</button><button title="Ir al final" aria-label="Ir al final" onClick={()=>{stop();seek(duration);}} disabled={progress!==null}><SkipForward size={17}/></button></div><div className="player-right"><div className="monitor-control" title="Volumen de escucha: no modifica la exportación"><button aria-label={monitorGain?'Silenciar monitor':'Activar monitor'} onClick={()=>{if(monitorGain){previousMonitorGain.current=monitorGain;setMonitorGain(0);}else setMonitorGain(previousMonitorGain.current||1);}}>{monitorGain?<Volume2 size={16}/>:<VolumeX size={16}/>}</button><input aria-label="Volumen de escucha" type="range" min={0} max={1} step={.01} value={monitorGain} onChange={e=>setMonitorGain(Number(e.target.value))}/></div><button title="Pantalla completa" aria-label="Pantalla completa" onClick={()=>void playerWrap.current?.requestFullscreen().catch(()=>message('Pantalla completa no disponible.'))}><Maximize size={16}/></button></div></div></div></div></section>
+    <section className="player-panel"><div className="viewer-pair"><SourceMonitor asset={sourceAsset} resource={sourceAsset?resources[sourceAsset.id]:undefined} fps={p.settings.fps} timelinePlaying={playing} disabled={progress!==null||busy||!dualView||home||exportOpen||subtitleOpen||!!workspaceDialog||!!contentSection||!!transitionSelection} onPlay={stop} onAdd={()=>sourceAsset&&addToTimeline(sourceAsset.id)}/><div className="program-viewer"><div className="monitor-heading"><span className="monitor-type">PROGRAMA</span><span className="monitor-filename">{p.name}</span><span className="monitor-resolution">{p.settings.height}p</span></div><div className={`preview-stage ${fitViewer?'fit-view':'pixel-view'}`} ref={playerWrap}><div className="canvas-surface" style={fitViewer?undefined:displaySize}><div className="program-canvas" style={displaySize}><canvas ref={canvas} width={p.settings.width} height={p.settings.height} aria-label="Vista previa del proyecto"/><CinemaGuides guide={cinemaGuide} project={p}/></div></div></div><div className="player-info"><span>Proyecto: {p.settings.width} × {p.settings.height} · {p.settings.fps} fps</span><label className="viewer-zoom">Zoom del visor<select aria-label="Zoom del visor" value={viewerZoom} onChange={e=>setViewerZoom(e.target.value==='fit'?'fit':Number(e.target.value))}><option value="fit">Ajustar</option><option value="0.25">25 %</option><option value="0.5">50 %</option><option value="1">100 % · tamaño real</option><option value="2">200 %</option></select></label></div><div className="player-controls"><div className="time-display"><span ref={timeLabel}>00:00:00:00</span><span className="muted"> / {timecode(duration,p.settings.fps)}</span></div><div className="transport"><button title="Ir al inicio" aria-label="Ir al inicio" onClick={()=>seek(0)} disabled={progress!==null}><SkipBack size={17}/></button><button className="play-button" aria-label={playing?'Pausar':'Reproducir'} title="Reproducir / pausar (Espacio)" disabled={progress!==null} onClick={toggle}>{playing?<Pause size={19} fill="currentColor"/>:<Play size={19} fill="currentColor"/>}</button><button title="Ir al final" aria-label="Ir al final" onClick={()=>{stop();seek(duration);}} disabled={progress!==null}><SkipForward size={17}/></button></div><div className="player-right"><div className="monitor-control" title="Volumen de escucha: no modifica la exportación"><button aria-label={monitorGain?'Silenciar monitor':'Activar monitor'} onClick={()=>{if(monitorGain){previousMonitorGain.current=monitorGain;setMonitorGain(0);}else setMonitorGain(previousMonitorGain.current||1);}}>{monitorGain?<Volume2 size={16}/>:<VolumeX size={16}/>}</button><input aria-label="Volumen de escucha" type="range" min={0} max={1} step={.01} value={monitorGain} onChange={e=>setMonitorGain(Number(e.target.value))}/></div><button title="Pantalla completa" aria-label="Pantalla completa" onClick={()=>void playerWrap.current?.requestFullscreen().catch(()=>message('Pantalla completa no disponible.'))}><Maximize size={16}/></button></div></div></div></div></section>
     {metersVisible&&<MasterMeter read={()=>engine.current?.meterLevels()??{master:[-60,-60],tracks:{}}}/>}</main>
     <WorkspaceDivider panel={lowerWorkspace}/>
-    <div className="lower-workspace" id="lower-workspace" ref={lowerWorkspace}><Timeline project={p} resources={resources} timeRef={timeRef} playheadRef={playhead} seek={seek} split={split} remove={remove} onTitle={()=>insertTitle()} onTransition={openTransition} onSeparateAudio={separateAudio} canSeparateAudio={canSeparateAudio} zoom={zoom} setZoom={setZoom} disabled={progress!==null}/><section className="bottom-dock" aria-label="Panel inferior"><nav className="dock-tabs" aria-label="Herramientas del panel inferior"><button className={dockTab==='inspector'?'active':''} aria-pressed={dockTab==='inspector'} onClick={()=>setDockTab('inspector')}>Inspector</button><button className={dockTab==='audio'?'active':''} aria-pressed={dockTab==='audio'} onClick={()=>setDockTab('audio')}>Audio</button><button className={dockTab==='color'?'active':''} aria-pressed={dockTab==='color'} onClick={()=>setDockTab('color')}>Color</button><button className={dockTab==='cinema'?'active':''} aria-pressed={dockTab==='cinema'} onClick={()=>setDockTab('cinema')}>Cine</button></nav><div className="dock-content">{dockTab==='inspector'?<Inspector project={p} engine={engine} disabled={progress!==null} onSeparateAudio={()=>separateAudio()} canSeparateAudio={canSeparateAudio()}/>:dockTab==='audio'?<AudioMixer project={p} engine={engine} disabled={progress!==null}/>:dockTab==='color'?<ColorPanel project={p} canvas={canvas} disabled={progress!==null||busy}/>:dockTab==='cinema'?<CinemaPanel project={p} source={canvas} guide={cinemaGuide} setGuide={setCinemaGuide} disabled={progress!==null||busy}/>:<ChromaControls clip={keyedClip} disabled={progress!==null||busy} onImport={()=>fileInput.current?.click()}/>}</div></section></div>
+    <div className="lower-workspace" id="lower-workspace" ref={lowerWorkspace}><Timeline project={p} resources={resources} timeRef={timeRef} playheadRef={playhead} seek={seek} split={split} remove={remove} onTitle={()=>{stop();setContentSection('text');}} onTransition={openTransition} onSeparateAudio={separateAudio} onDeleteTrack={removeTrack} canSeparateAudio={canSeparateAudio} zoom={zoom} setZoom={setZoom} disabled={progress!==null}/><section className="bottom-dock" aria-label="Panel inferior"><nav className="dock-tabs" aria-label="Herramientas del panel inferior"><button className={dockTab==='inspector'?'active':''} aria-pressed={dockTab==='inspector'} onClick={()=>setDockTab('inspector')}>Inspector</button><button className={dockTab==='audio'?'active':''} aria-pressed={dockTab==='audio'} onClick={()=>setDockTab('audio')}>Audio</button><button className={dockTab==='effects'?'active':''} aria-pressed={dockTab==='effects'} onClick={()=>showEffects()}>Efectos</button>
+    <button className={dockTab==='transform'?'active':''} aria-pressed={dockTab==='transform'} onClick={()=>setDockTab('transform')}>Transformar</button>
+    </nav><div className="dock-content">{dockTab==='inspector'||dockTab==='transform'?
+      <><Inspector project={p} canvas={canvas} engine={engine} disabled={progress!==null} onSeparateAudio={()=>separateAudio()}
+        canSeparateAudio={canSeparateAudio()} transformOnly={dockTab==='transform'}/>
+      {dockTab==='transform'&&<div className="cinema-panel"><CinemaFraming project={p} guide={cinemaGuide} setGuide={setCinemaGuide} disabled={progress!==null||busy}/></div>}</>
+      :dockTab==='audio'?<AudioMixer project={p} engine={engine} disabled={progress!==null}/>
+      :<div className="effects-dock">
+        <div className="filter-options">
+          <button type="button" aria-pressed={effectsGroup==='color'} onClick={()=>setEffectsGroup('color')}>Color y cine</button>
+          <button type="button" aria-pressed={effectsGroup==='chroma'} onClick={()=>setEffectsGroup('chroma')}>Chroma key</button>
+        </div>
+        {effectsGroup==='color'?<>
+          <CinemaPanel project={p} disabled={progress!==null||busy} onPreview={previewCinema}/>
+          <div className="color-panel"><QuickColorFilters project={p} onPreview={previewClipColor} disabled={progress!==null||busy}/></div>
+        </>:<ChromaControls clip={keyedClip} disabled={progress!==null||busy} onImport={()=>fileInput.current?.click()}/>}
+      </div>}</div></section></div>
     <footer className="app-footer"><span>AtlasFX</span><span className="app-footer-center"><Clapperboard/> Edición</span><span>{importedAssets.length} medios · {p.tracks.length} pistas · {(duration/SECOND).toFixed(1)} s</span></footer>
     </div>
     {(error||success)&&<div className={`toast ${error?'error':'success'}`} role={error?'alert':'status'}>{error?<AlertCircle size={18}/>:<Check size={18}/>}<span>{error||success}</span><button aria-label="Cerrar aviso" onClick={()=>{message('');setSuccess('');}}><X size={15}/></button></div>}
@@ -295,17 +404,29 @@ export function App(){
     {transitionSelection&&<TransitionDialog project={p} selected={transitionSelection} onClose={()=>setTransitionSelection(undefined)} onSeek={seek}/>}
     {workspaceDialog&&<WorkspaceDialog key={p.id+'-'+workspaceDialog} mode={workspaceDialog} project={p}
       time={timeRef.current} onSeek={seek} onClose={()=>setWorkspaceDialog(undefined)}/>}
+    {deletingTrack&&<div className="modal-backdrop">
+      <section className="modal workspace-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-track-title">
+        <h2 id="remove-track-title">¿Eliminar «{deletingTrack.name}»?</h2>
+        <p>Se quitarán {deletingTrack.clips.length===1?'el clip de esta pista':`los ${deletingTrack.clips.length} clips de esta pista`} de la línea de tiempo. Podés deshacer el cambio con Ctrl+Z.</p>
+        <div className="modal-actions">
+          <button autoFocus type="button" className="button secondary" onClick={()=>setTrackToDelete(undefined)}>Cancelar</button>
+          <button type="button" className="button primary" onClick={()=>removeTrack(deletingTrack.id,true)}>Eliminar pista</button>
+        </div>
+      </section>
+    </div>}
+    {subtitleOpen&&<SubtitleDialog project={p} selected={selected} resources={resources}
+      onClose={()=>setSubtitleOpen(false)} onGenerated={summary=>{setSubtitleOpen(false);setSuccess(summary);}}/>}
     {contentSection&&<div className="modal-backdrop">
       <section className="modal workspace-dialog project-settings" role="dialog" aria-modal="true" aria-labelledby="content-section-title">
         <h2 id="content-section-title">{CONTENT_SECTIONS[contentSection]}</h2>
-        <ContentTools section={contentSection}
+        {contentSection==='text'?<TextPresets insert={insertTitle}/>:<ContentTools section={contentSection}
           clip={clip&&!clip.audioOnly&&p.assets[clip.assetId].kind!=='audio'?clip:undefined}
           watermarkAssets={importedAssets.filter(asset=>asset.kind==='image'&&resources[asset.id])}
           updateClip={(props:Partial<Clip>)=>clip&&apply(d=>setClipProps(d,clip.id,props))}
           insertGraphic={(kind,color,secondColor)=>void addGraphic(kind,color,secondColor)}
           insertWatermark={addWatermark} insertLowerThird={addLowerThird} snapshot={snapshot}
           insertRecording={file=>{setContentSection(undefined);void importFiles([file],'recording');}}
-          message={message}/>
+          message={message}/>}
         <div className="modal-actions"><button autoFocus type="button" className="button secondary"
           onClick={()=>setContentSection(undefined)}>Cerrar</button></div>
       </section>
@@ -315,6 +436,19 @@ export function App(){
         storage.download(renderReview.blob,renderReview.name);
         setRenderReview(undefined);setExportOpen(false);setSuccess('Video guardado. Revisá tus descargas.');
       }}/>}
-    {exportOpen&&!renderReview&&<div className="modal-backdrop"><section className="modal export-modal" role="dialog" aria-modal="true" aria-labelledby="export-title"><button className="close-modal" aria-label="Cerrar exportación" disabled={progress!==null} onClick={()=>setExportOpen(false)}><X/></button><div className="modal-eyebrow"><Download size={17}/> EXPORTACIÓN DE VIDEO</div><h2 id="export-title">Dale salida a tu historia.</h2><p className="muted">{(duration/SECOND).toFixed(1)} segundos de video</p><fieldset disabled={progress!==null}><label className="dialog-field">Nombre del archivo<input value={exportName} onChange={e=>setExportName(e.target.value)} maxLength={120}/></label><div className="dialog-grid"><label className="dialog-field">Resolución<select value={exportResolution} onChange={e=>setExportResolution(Number(e.target.value))}>{resolutionOptions.map((r,i)=><option key={r.label} value={i}>{r.label}</option>)}</select></label><label className="dialog-field">Fotogramas por segundo<select value={exportFps} onChange={e=>setExportFps(Number(e.target.value))}>{[24,25,30,50,60].map(f=><option key={f}>{f}</option>)}</select></label></div><label className="dialog-field">Formato<select value={exportFormat} onChange={e=>setExportFormat(Number(e.target.value))}>{availableFormats.map((f,i)=><option value={i} key={f.mime}>{f.name}</option>)}</select></label><label className="dialog-field">Calidad<select value={exportQuality} onChange={e=>setExportQuality(Number(e.target.value))}><option value={3000000}>Baja · 3 Mbps</option><option value={8000000}>Media · 8 Mbps</option><option value={12000000}>Alta · 12 Mbps</option><option value={20000000}>Máxima · 20 Mbps</option></select></label></fieldset><div className="export-notice"><AlertCircle size={16}/><p>Esta versión exporta en tiempo real. Mantén esta ventana activa hasta terminar. El rendimiento del equipo puede afectar la fluidez del video. Los formatos dependen del navegador.</p></div>{exportNotice&&<p className="export-stream-notice" role="status">{exportNotice}</p>}{!availableFormats.length&&<p role="alert">Este navegador no ofrece un formato de exportación compatible. Prueba Chrome o Edge actualizados.</p>}{progress!==null&&<div className="progress-area"><div><span>Exportando video…</span><strong>{Math.round(progress*100)}%</strong></div><progress max={1} value={progress}/></div>}<div className="modal-actions">{progress!==null?<button className="button secondary" onClick={()=>abort.current?.abort()}>Cancelar exportación</button>:<button className="button secondary" onClick={()=>setExportOpen(false)}>Cancelar</button>}<button className="button primary" disabled={progress!==null||!availableFormats.length} onClick={()=>void startExport()}>{progress!==null?<LoaderCircle size={16} className="spin"/>:<Download size={16}/>} {progress!==null?'Renderizando…':'Renderizar y revisar'}</button></div></section></div>}
+    {exportOpen&&!renderReview&&<div className="modal-backdrop"><section className="modal export-modal" role="dialog" aria-modal="true" aria-labelledby="export-title"><button className="close-modal" aria-label="Cerrar exportación" disabled={progress!==null} onClick={()=>setExportOpen(false)}><X/></button><div className="modal-eyebrow"><Download size={17}/> EXPORTACIÓN DE VIDEO</div><h2 id="export-title">Dale salida a tu historia.</h2><p className="muted">{(duration/SECOND).toFixed(1)} segundos de video</p><div className="export-layout"><fieldset disabled={progress!==null}><label className="dialog-field">Nombre del archivo<input value={exportName} onChange={e=>setExportName(e.target.value)} maxLength={120}/></label><div className="dialog-grid"><label className="dialog-field">Tamaño de salida
+      <select value={exportFrameId} onChange={event=>{setExportFrameId(event.target.value);setExportFit(undefined);}}>
+        <option value="project">Original del proyecto</option>
+        {exportFrames.map(preset=><option key={preset.id} value={preset.id}>{preset.label} · {preset.width} × {preset.height}</option>)}
+      </select></label>
+    {frame?<label className="dialog-field">Ajuste de imagen
+      <select value={frame.fit} onChange={event=>setExportFit(event.target.value as ExportFit)}>
+        <option value="contain">Imagen completa · añade barras si hace falta</option>
+        <option value="cover">Llenar el cuadro · recorte centrado</option>
+      </select></label>:<label className="dialog-field">Resolución<select value={exportResolution} onChange={e=>setExportResolution(Number(e.target.value))}>{resolutionOptions.map((r,i)=><option key={r.label} value={i}>{r.label}</option>)}</select></label>}
+    <label className="dialog-field">Fotogramas por segundo<select value={exportFps} onChange={e=>setExportFps(Number(e.target.value))}>{[24,25,30,50,60].map(f=><option key={f}>{f}</option>)}</select></label></div><label className="dialog-field">Tipo de archivo<select value={exportFormat} onChange={e=>setExportFormat(Number(e.target.value))}>{availableFormats.map((f,i)=><option value={i} key={f.mime}>{f.name}</option>)}</select></label><label className="dialog-field">Calidad<select value={exportQuality} onChange={e=>setExportQuality(Number(e.target.value))}><option value={3000000}>Baja · 3 Mbps</option><option value={8000000}>Media · 8 Mbps</option><option value={12000000}>Alta · 12 Mbps</option><option value={20000000}>Máxima · 20 Mbps</option></select></label></fieldset>
+      {progress===null&&<ExportFramingPreview project={p} resources={resources} sourceSize={exportSize}
+        frame={frame} label={exportFrame?.label??'Original del proyecto'} initialTime={timeRef.current}/>}
+    </div><div className="export-notice"><AlertCircle size={16}/><p>Esta versión exporta en tiempo real. Mantén esta ventana activa hasta terminar. El rendimiento del equipo puede afectar la fluidez del video. Los formatos dependen del navegador.</p></div>{exportNotice&&<p className="export-stream-notice" role="status">{exportNotice}</p>}{!availableFormats.length&&<p role="alert">Este navegador no ofrece un formato de exportación compatible. Prueba Chrome o Edge actualizados.</p>}{progress!==null&&<div className="progress-area"><div><span>Exportando video…</span><strong>{Math.round(progress*100)}%</strong></div><progress max={1} value={progress}/></div>}<div className="modal-actions">{progress!==null?<button className="button secondary" onClick={()=>abort.current?.abort()}>Cancelar exportación</button>:<button className="button secondary" onClick={()=>setExportOpen(false)}>Cancelar</button>}<button className="button primary" disabled={progress!==null||!availableFormats.length} onClick={()=>void startExport()}>{progress!==null?<LoaderCircle size={16} className="spin"/>:<Download size={16}/>} {progress!==null?'Renderizando…':'Renderizar y revisar'}</button></div></section></div>}
   </div>;
 }

@@ -62,7 +62,7 @@ const graphics: Record<Graphic,string> = {
 const positions = [[24,24],[76,24],[24,76],[76,76]] as const;
 const corners = ['Superior izquierda','Superior derecha','Inferior izquierda','Inferior derecha'];
 
-export const CONTENT_SECTIONS = {"layers":"Capas visuales","brand":"Marca y títulos","motion":"Movimiento","capture":"Captura","format":"Formato"} as const;
+export const CONTENT_SECTIONS = {"text":"Texto y títulos","layers":"Capas visuales","brand":"Marca y títulos","motion":"Movimiento","capture":"Captura","format":"Formato"} as const;
 export type ContentSection = keyof typeof CONTENT_SECTIONS;
 
 export function ContentTools({section,clip, watermarkAssets, updateClip, insertGraphic, insertWatermark, insertLowerThird, snapshot, insertRecording, message}: {

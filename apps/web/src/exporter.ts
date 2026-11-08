@@ -1,12 +1,79 @@
 import {cinemaHeight,endTime,SECOND,type Project} from '@corte/core';
 import {Compositor} from './engine';
 import type {MediaResource} from './media';
+import type {TitleViewport} from './titleRender';
 export const formats=()=>typeof MediaRecorder==='undefined'?[]:[
   {name:'MP4 · H.264 / AAC',mime:'video/mp4;codecs=avc1.424028,mp4a.40.2',extension:'mp4'},
   {name:'WebM · VP9 / Opus',mime:'video/webm;codecs=vp9,opus',extension:'webm'},
   {name:'WebM · VP8 / Opus',mime:'video/webm;codecs=vp8,opus',extension:'webm'}
 ].filter(f=>MediaRecorder.isTypeSupported(f.mime));
-export interface ExportOptions {width:number;height:number;fps:number;bitrate:number;mime:string}
+export type ExportFit = 'contain'|'cover';
+export interface ExportFrame {width:number;height:number;fit:ExportFit;ignoreProjectFraming?:boolean}
+export const exportFrames=[
+  {id:'tiktok',label:'TikTok · Vertical',width:1080,height:1920,fit:'contain'},
+  {id:'reels',label:'Instagram · Reels',width:1080,height:1920,fit:'contain'},
+  {id:'instagram',label:'Instagram · Publicación vertical',width:1080,height:1350,fit:'contain'},
+  {id:'square',label:'Instagram · Publicación cuadrada',width:1080,height:1080,fit:'contain'},
+  {id:'youtube',label:'YouTube · Horizontal',width:1920,height:1080,fit:'contain'},
+  {id:'cinema',label:'Cine · Panorámico 2.39:1',width:1920,height:804,fit:'cover',ignoreProjectFraming:true},
+] as const satisfies ReadonlyArray<ExportFrame & {id:string;label:string}>;
+
+export function fitExportFrame(sourceWidth:number,sourceHeight:number,frame:ExportFrame){
+  const scale=(frame.fit==='cover'?Math.max:Math.min)(frame.width/sourceWidth,frame.height/sourceHeight);
+  const width=sourceWidth*scale,height=sourceHeight*scale;
+  return {x:(frame.width-width)/2,y:(frame.height-height)/2,width,height,scale};
+}
+export function exportSourceSize(project:Project,resolution:{width:number;height:number},frame?:ExportFrame){
+  const {width,height}=project.settings;
+  const visible=exportVisibleHeight(project,width,height,frame);
+  const scale=frame?Math.min(1,fitExportFrame(width,visible,frame).scale)
+    : (width<height?resolution.height:resolution.width)/width;
+  return {
+    width:Math.max(2,Math.round(width*scale/2)*2),
+    height:Math.max(2,Math.round(height*scale/2)*2),
+  };
+}
+
+function exportVisibleHeight(project:Project,width:number,height:number,frame?:ExportFrame){
+  const cinema=project.settings.cinema;
+  return cinema?.framing==='crop'&&!frame?.ignoreProjectFraming
+    ? cinemaHeight(width,height,cinema.ratio):height;
+}
+
+export function getExportLayout(project:Project,source:{width:number;height:number},frame?:ExportFrame){
+  const {width,height}=source;
+  const cinema=project.settings.cinema;
+  const renderProject=frame?.ignoreProjectFraming&&cinema
+    ? {...project,settings:{...project.settings,cinema:{...cinema,ratio:0 as const}}}
+    : project;
+  const visible=exportVisibleHeight(project,width,height,frame);
+  const sourceTop=Math.floor((height-visible)/2)/height;
+  const sourceHeight=visible/height;
+  const destination=frame?fitExportFrame(width,visible,frame):{x:0,y:0,width,height:visible};
+  let titleViewport:TitleViewport|undefined;
+  if(frame?.fit==='cover'){
+    titleViewport={
+      x:Math.max(0,-destination.x/destination.width),
+      y:sourceTop+sourceHeight*Math.max(0,-destination.y/destination.height),
+      width:Math.min(1,frame.width/destination.width),
+      height:sourceHeight*Math.min(1,frame.height/destination.height),
+    };
+  }
+  return {renderProject,sourceTop,sourceHeight,width:frame?.width??width,height:frame?.height??visible,destination,titleViewport};
+}
+
+export function drawExportFrame(ctx:CanvasRenderingContext2D,source:HTMLCanvasElement,layout:ReturnType<typeof getExportLayout>){
+  const {width,height}=ctx.canvas;
+  const {x,y,width:frameWidth,height:frameHeight}=layout.destination;
+  const scaleX=width/layout.width;
+  const scaleY=height/layout.height;
+  ctx.fillStyle='#000';
+  ctx.fillRect(0,0,width,height);
+  ctx.drawImage(source,0,source.height*layout.sourceTop,source.width,source.height*layout.sourceHeight,
+    x*scaleX,y*scaleY,frameWidth*scaleX,frameHeight*scaleY);
+}
+
+export interface ExportOptions {width:number;height:number;fps:number;bitrate:number;mime:string;frame?:ExportFrame}
 export interface ExportResult {
   blob: Blob;
   renderGaps: number;
@@ -16,18 +83,21 @@ export async function exportVideo(project:Project,resources:Record<string,MediaR
   const duration=endTime(project);if(!duration)throw new Error('Agrega clips antes de exportar.');
   if(Object.keys(project.assets).some(id=>!project.assets[id].generated&&project.tracks.some(t=>t.clips.some(c=>c.assetId===id))&&!resources[id]))throw new Error('Reubica los medios faltantes antes de exportar.');
   const canvas=document.createElement('canvas');canvas.width=options.width;canvas.height=options.height;
-  const cinema=project.settings.cinema;
-  const visible=cinema?.framing==='crop'?cinemaHeight(options.width,options.height,cinema.ratio):options.height;
-  const cropped=visible<options.height?document.createElement('canvas'):undefined;
-  if(cropped){cropped.width=options.width;cropped.height=visible;}
-  const cropContext=cropped?.getContext('2d');
+  const layout=getExportLayout(project,options,options.frame);
+  const output=options.frame||layout.sourceHeight<1?document.createElement('canvas'):undefined;
+  if(output){output.width=layout.width;output.height=layout.height;}
+  const outputContext=output?.getContext('2d');
   const render=(at:number,playing:boolean)=>{
-    engine.render(project,resources,at,playing);
-    cropContext?.drawImage(canvas,0,Math.floor((options.height-visible)/2),options.width,visible,0,0,options.width,visible);
+    engine.render(layout.renderProject,resources,at,playing,undefined,undefined,layout.titleViewport);
+    if(outputContext)drawExportFrame(outputContext,canvas,layout);
   };
-  const engine=new Compositor(canvas);let stream:MediaStream|undefined;let recorder:MediaRecorder|undefined;let frame=0;
+  const engine=new Compositor(canvas);let stream:MediaStream|undefined;let recorder:MediaRecorder|undefined;let animationFrame=0;
   try{
-    const audio=await engine.connectAudio();const scheduled=await engine.prepareExportAudio(project,resources,signal);if(!scheduled)onNotice?.('Este proyecto usa audio en streaming por su tamaño o códec. Puede presentar cortes: revisa el archivo exportado antes de compartirlo.');stream=(cropped??canvas).captureStream(options.fps);audio.getAudioTracks().forEach(t=>stream!.addTrack(t));
+    const audio=await engine.connectAudio(project);
+    if(project.tracks.some(track=>track.clips.some(clip=>clip.title?.font==='Inter'))){
+      await document.fonts.load('36px Inter').catch(()=>{});
+    }
+    const scheduled=await engine.prepareExportAudio(project,resources,signal);if(!scheduled)onNotice?.('Este proyecto usa audio en streaming por su tamaño o códec. Puede presentar cortes: revisa el archivo exportado antes de compartirlo.');stream=(output??canvas).captureStream(options.fps);audio.getAudioTracks().forEach(t=>stream!.addTrack(t));
     recorder=new MediaRecorder(stream,{mimeType:options.mime,videoBitsPerSecond:options.bitrate,audioBitsPerSecond:192000});
     const chunks:Blob[]=[];recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
     render(0,false);
@@ -43,7 +113,7 @@ export async function exportVideo(project:Project,resources:Record<string,MediaR
       const abort=()=>{canceled=true;if(recorder!.state!=='inactive')recorder!.stop();};
       signal.addEventListener('abort',abort,{once:true});
       recorder!.onerror=()=>{failure=new Error('El navegador no pudo codificar el video. Prueba otra resolución o formato.');if(recorder!.state!=='inactive')recorder!.stop();else reject(failure);};
-      recorder!.onstop=()=>{signal.removeEventListener('abort',abort);cancelAnimationFrame(frame);if(canceled)reject(new DOMException('Exportación cancelada','AbortError'));else if(failure)reject(failure);else {onProgress(1);resolve({blob:new Blob(chunks,{type:recorder!.mimeType||options.mime}),renderGaps,firstRenderGap});}};
+      recorder!.onstop=()=>{signal.removeEventListener('abort',abort);cancelAnimationFrame(animationFrame);if(canceled)reject(new DOMException('Exportación cancelada','AbortError'));else if(failure)reject(failure);else {onProgress(1);resolve({blob:new Blob(chunks,{type:recorder!.mimeType||options.mime}),renderGaps,firstRenderGap});}};
       recorder!.start(1000);const start=engine.startExportAudio(project)??performance.now()/1000;
       const tick=()=>{
         const at=Math.min(duration,Math.round(((engine.audioClock()??performance.now()/1000)-start)*SECOND));
@@ -64,9 +134,9 @@ export async function exportVideo(project:Project,resources:Record<string,MediaR
           lastProgressTime=at;
           onProgress(at/duration);
         }
-        frame=requestAnimationFrame(tick);
+        animationFrame=requestAnimationFrame(tick);
       };
       tick();
     });
-  }finally{cancelAnimationFrame(frame);if(recorder&&recorder.state!=='inactive')recorder.stop();engine.dispose();stream?.getTracks().forEach(t=>t.stop());}
+  }finally{cancelAnimationFrame(animationFrame);if(recorder&&recorder.state!=='inactive')recorder.stop();engine.dispose();stream?.getTracks().forEach(t=>t.stop());}
 }

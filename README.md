@@ -15,7 +15,7 @@ mostrar un aviso de reputación de SmartScreen. Consulta la [guía de Microsoft 
 ## Abrir desde el código fuente
 
 - Doble clic en **Abrir editor.cmd** para abrir la versión web en el navegador.
-- Doble clic en **Abrir escritorio.cmd** para abrir la misma interfaz en Electron.
+- Doble clic en **AtlasFX.exe** en la carpeta del proyecto para abrir la versión de escritorio.
 
 Los accesos requieren las dependencias instaladas. El de escritorio requiere también una compilación web previa. Las dos versiones mantienen bibliotecas locales separadas.
 

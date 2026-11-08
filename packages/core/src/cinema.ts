@@ -1,6 +1,6 @@
 export const CINEMA_RATIOS = [1.85, 2, 2.35, 2.39] as const;
 export const CINEMA_LOOKS = ['neutral', 'warm', 'cool', 'mono', 'vintage', 'clean',
-  'teal', 'bleach', 'faded', 'golden', 'blueNight', 'sciFi'] as const;
+  'teal', 'bleach', 'faded', 'golden', 'blueNight', 'sciFi', 'cyberpunk', 'horror', 'goldenHour', 'bloodbath', 'portra', 'velvia', 'fineArt'] as const;
 
 export type CinemaRGB = [number, number, number];
 export interface CinemaGrade {
@@ -28,6 +28,7 @@ export interface CinemaSettings {
   vignette: number;
   lightLeak: number;
   grade?: CinemaGrade;
+  bloom?: number;
 }
 
 export const DEFAULT_CINEMA: CinemaSettings = {
@@ -47,6 +48,7 @@ export function validCinema(settings: CinemaSettings) {
     CINEMA_LOOKS.includes(settings.look) &&
     [settings.intensity, settings.grain, settings.vignette, settings.lightLeak]
       .every(value => inRange(value,0,1)) &&
+    (settings.bloom === undefined || inRange(settings.bloom,0,1)) &&
     (settings.grade === undefined || validGrade(settings.grade));
 }
 

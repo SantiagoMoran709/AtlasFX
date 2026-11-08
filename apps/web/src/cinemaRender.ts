@@ -17,6 +17,36 @@ export function cinemaGrade(settings?: CinemaSettings) {
 }
 
 export class CinemaRenderer {
+  private bloomSample?: CanvasRenderingContext2D;
+
+  private drawBloom(ctx:CanvasRenderingContext2D, amount:number) {
+    const {width,height}=ctx.canvas;
+    if(!this.bloomSample){
+      const scratch=document.createElement('canvas');
+      this.bloomSample=scratch.getContext('2d',{willReadFrequently:true})!;
+    }
+    const sample=this.bloomSample;
+    const scale=Math.min(1,320/Math.max(width,height));
+    const w=Math.max(1,Math.round(width*scale)),h=Math.max(1,Math.round(height*scale));
+    if(sample.canvas.width!==w||sample.canvas.height!==h){
+      sample.canvas.width=w;sample.canvas.height=h;
+    }
+    sample.drawImage(ctx.canvas,0,0,w,h);
+    const image=sample.getImageData(0,0,w,h);
+    const data=image.data;
+    for(let i=0;i<data.length;i+=4){
+      const luma=(.2126*data[i]+.7152*data[i+1]+.0722*data[i+2])/255;
+      data[i+3]=Math.round(data[i+3]*Math.max(0,Math.min(1,(luma-.85)/.15)));
+    }
+    sample.putImageData(image,0,0);
+    ctx.save();
+    ctx.globalCompositeOperation='screen';
+    ctx.globalAlpha=amount;
+    ctx.filter=`blur(${Math.max(3,Math.round(Math.min(width,height)*.018))}px)`;
+    ctx.drawImage(sample.canvas,0,0,width,height);
+    ctx.restore();
+  }
+
   private noise?: CanvasPattern;
   private catalog?: ReturnType<typeof createCatalogGrade> | null;
 
@@ -28,40 +58,45 @@ export class CinemaRenderer {
       const graded=this.catalog?.draw(ctx.canvas,settings);
       if(graded)ctx.drawImage(graded,0,0);
       else {
-        const {exposure,contrast,saturation}=settings.grade;
+        const {exposure,contrast}=settings.grade;
+        const saturation=settings.look==='fineArt'?0:settings.grade.saturation;
         const amount=settings.intensity;
         ctx.filter=`brightness(${2**(exposure*amount)}) contrast(${1+(contrast-1)*amount}) saturate(${1+(saturation-1)*amount})`;
         ctx.drawImage(ctx.canvas,0,0);
         ctx.filter='none';
       }
     }
-    if(settings.lightLeak>0){
+    if(settings.bloom) this.drawBloom(ctx,settings.bloom);
+    const lightLeak=settings.lightLeak*settings.intensity;
+    const vignette=settings.vignette*settings.intensity;
+    const grain=settings.grain*settings.intensity;
+    if(lightLeak>0){
       const x=width*(.85+.12*Math.sin(time/SECOND));
       const y=height*.12;
       const glow=ctx.createRadialGradient(x,y,0,x,y,Math.max(width,height)*.65);
-      glow.addColorStop(0,`rgba(255,106,44,${settings.lightLeak*.7})`);
+      glow.addColorStop(0,`rgba(255,106,44,${lightLeak*.7})`);
       glow.addColorStop(1,'rgba(255,106,44,0)');
       ctx.globalCompositeOperation='screen';
       ctx.fillStyle=glow;
       ctx.fillRect(0,0,width,height);
       ctx.globalCompositeOperation='source-over';
     }
-    if(settings.vignette>0){
+    if(vignette>0){
       ctx.save();
       ctx.scale(width,height);
       const shadow=ctx.createRadialGradient(.5,.5,.24,.5,.5,.72);
       shadow.addColorStop(0,'transparent');
-      shadow.addColorStop(1,`rgba(0,0,0,${settings.vignette*.9})`);
+      shadow.addColorStop(1,`rgba(0,0,0,${vignette*.9})`);
       ctx.fillStyle=shadow;
       ctx.fillRect(0,0,1,1);
       ctx.restore();
     }
-    if(settings.grain>0){
+    if(grain>0){
       const pattern=this.noise??=createNoise(ctx);
       const frame=Math.floor(time*24/SECOND);
       pattern.setTransform(new DOMMatrix().translate((frame*53)%128,(frame*79)%128));
       ctx.globalCompositeOperation='soft-light';
-      ctx.globalAlpha=settings.grain*.65;
+      ctx.globalAlpha=grain*.65;
       ctx.fillStyle=pattern;
       ctx.fillRect(0,0,width,height);
       ctx.globalAlpha=1;

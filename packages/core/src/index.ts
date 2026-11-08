@@ -29,7 +29,10 @@ export interface Asset {
   generated?: 'title';
   metadata?: MediaMetadata;
 }
-export const TITLE_FONTS = ['Arial', 'Georgia', 'Verdana', 'Trebuchet MS', 'Courier New'] as const;
+export const TITLE_FONTS = ['Inter', 'Arial', 'Georgia', 'Verdana', 'Trebuchet MS', 'Courier New'] as const;
+export const TITLE_PRESETS = ['subtitle', 'opening', 'lowerThird'] as const;
+export type TitlePreset = (typeof TITLE_PRESETS)[number];
+
 export interface TitleStyle {
   text: string;
   size: number;
@@ -38,6 +41,9 @@ export interface TitleStyle {
   y: number;
   bold: boolean;
   outline?: true;
+  preset?: TitlePreset;
+  background?: boolean;
+  roleText?: string;
   font?: (typeof TITLE_FONTS)[number];
 }
 export interface ChromaKey {
@@ -65,6 +71,8 @@ export interface Clip {
   volume: number;
   opacity: number;
   scale: number;
+  scaleX?: number;
+  scaleY?: number;
   x?: number;
   y?: number;
   blurBackground?: true;
@@ -93,6 +101,20 @@ export interface Track {
   role?: 'titles';
   transitions?: Transition[];
 }
+export interface AudioMixSettings {
+  voiceTrackId?: string;
+  musicTrackId?: string;
+  eqEnabled: boolean;
+  body: number;
+  clarity: number;
+  deEss: number;
+  ducking: boolean;
+}
+
+export const DEFAULT_AUDIO_MIX: AudioMixSettings = {
+  eqEnabled: false, body: 2, clarity: 2, deEss: -2, ducking: false,
+};
+
 export interface Project {
   version: 1;
   id: string;
@@ -105,6 +127,7 @@ export interface Project {
     fps: number;
     sampleRate: number;
     masterVolume?: number;
+    audioMix?: AudioMixSettings;
     cinema?: CinemaSettings;
   };
   assets: Record<string, Asset>;
@@ -202,6 +225,17 @@ export function validateProject(p: Project): void {
         p.settings.masterVolume <= 2),
     'Volumen maestro no válido.',
   );
+  const mix = p.settings.audioMix;
+  if (mix !== undefined) {
+    check(
+      mix && typeof mix.eqEnabled === 'boolean' && typeof mix.ducking === 'boolean' &&
+        [mix.voiceTrackId, mix.musicTrackId].every(id => id === undefined || typeof id === 'string') &&
+        finite(mix.body) && mix.body >= -3 && mix.body <= 6 &&
+        finite(mix.clarity) && mix.clarity >= -2 && mix.clarity <= 4 &&
+        finite(mix.deEss) && mix.deEss >= -4 && mix.deEss <= 0,
+      'Ajustes de mezcla de audio no válidos.',
+    );
+  }
   check(
     p.notes === undefined ||
       (typeof p.notes === 'string' && p.notes.length <= 20000),
@@ -323,6 +357,9 @@ export function validateProject(p: Project): void {
             [title.x, title.y].every((n) => finite(n) && n >= 0 && n <= 100) &&
             typeof title.bold === 'boolean' &&
             (title.outline === undefined || title.outline === true) &&
+            (title.preset === undefined || TITLE_PRESETS.includes(title.preset)) &&
+            (title.background === undefined || typeof title.background === 'boolean') &&
+            (title.roleText === undefined || (typeof title.roleText === 'string' && title.roleText.length <= 90)) &&
             (title.font === undefined || TITLE_FONTS.includes(title.font)),
           'Ajustes de título no válidos.',
         );
@@ -355,6 +392,8 @@ export function validateProject(p: Project): void {
           finite(c.scale) &&
           c.scale >= 0.1 &&
           c.scale <= 4 &&
+          [c.scaleX, c.scaleY].every(scale => scale === undefined ||
+            (finite(scale) && scale >= 0.1 && scale <= 4)) &&
           finite(c.rotation) &&
           Math.abs(c.rotation) <= 360,
         'Propiedades de clip no válidas.',
@@ -494,6 +533,71 @@ export function moveClip(
     target.clips.push(clip);
   });
 }
+function visualTrack(track: Track): boolean {
+  return track.kind === 'video' && track.role !== 'titles';
+}
+
+function nextVideoTrack(project: Project): Track {
+  const numbers = project.tracks.map(track => Number(/^Video (\d+)$/.exec(track.name)?.[1] ?? 0));
+  return createTrack('video', `Video ${Math.max(0, ...numbers) + 1}`);
+}
+
+export function addVideoTrack(project: Project): Project {
+  return edit(project, draft => {
+    const index = draft.tracks.findIndex(track => visualTrack(track) || track.kind === 'audio');
+    draft.tracks.splice(index === -1 ? draft.tracks.length : index, 0, nextVideoTrack(draft));
+  });
+}
+
+export function addAudioTrack(project: Project): Project {
+  return edit(project, draft => {
+    const numbers = draft.tracks.map(track => Number(/^Audio (\d+)$/.exec(track.name)?.[1] ?? 0));
+    draft.tracks.push(createTrack('audio', `Audio ${Math.max(0, ...numbers) + 1}`));
+  });
+}
+
+export function deleteTrack(project: Project, id: string): Project {
+  return edit(project, draft => {
+    const track = draft.tracks.find(item => item.id === id);
+    check(track && !track.locked, 'Desbloqueá la pista antes de eliminarla.');
+    draft.tracks = draft.tracks.filter(item => item.id !== id);
+    const mix = draft.settings.audioMix;
+    if (!mix) return;
+    if (mix.voiceTrackId === id) {
+      mix.voiceTrackId = undefined;
+      mix.eqEnabled = false;
+      mix.ducking = false;
+    }
+    if (mix.musicTrackId === id) {
+      mix.musicTrackId = undefined;
+      mix.ducking = false;
+    }
+  });
+}
+
+export function moveClipLayer(project: Project, id: string, direction: 'front' | 'back'): Project {
+  const current = project.tracks.find(track => track.clips.some(clip => clip.id === id));
+  check(current && visualTrack(current) && !current.locked, 'Elegí un clip visual de una pista desbloqueada.');
+  const layers = project.tracks.filter(visualTrack);
+  const edge = direction === 'front' ? layers[0] : layers[layers.length - 1];
+  if (edge.id === current.id) return project;
+
+  return edit(project, draft => {
+    const {track, clip} = editable(draft, id);
+    const edgeIndex = draft.tracks.findIndex(item => item.id === edge.id);
+    let target = draft.tracks[edgeIndex];
+    const occupied = target.clips.some(item =>
+      item.start < clip.start + clip.duration && item.start + item.duration > clip.start);
+    if (target.locked || !target.visible || occupied) {
+      check(draft.tracks.length < MAX_TRACKS, 'No hay espacio para una nueva capa de video.');
+      target = nextVideoTrack(draft);
+      draft.tracks.splice(edgeIndex + (direction === 'back' ? 1 : 0), 0, target);
+    }
+    track.clips = track.clips.filter(item => item.id !== id);
+    target.clips.push(clip);
+  });
+}
+
 export function trimClip(
   p: Project,
   id: string,
@@ -530,6 +634,8 @@ export function setClipProps(
       | 'volume'
       | 'opacity'
       | 'scale'
+      | 'scaleX'
+      | 'scaleY'
       | 'x'
       | 'y'
       | 'blurBackground'
@@ -615,10 +721,20 @@ export function addTitle(
   project: Project,
   start: Time,
   clipId = uid(),
-  kind: 'title' | 'subtitle' = 'title',
+  kind: 'title' | TitlePreset = 'title',
+  content?: { text: string; roleText?: string },
 ): Project {
-  return addTextClips(project, [{ id: clipId, start, duration: 3 * SECOND,
-    text: kind === 'subtitle' ? 'Escribe tu subtítulo' : 'Escribe tu título' }], kind);
+  const placeholders = {
+    title: 'Escribe tu título',
+    subtitle: 'Escribe tu subtítulo',
+    opening: 'Capítulo 1',
+    lowerThird: 'Nombre de la persona',
+  };
+  return addTextClips(project, [{
+    id: clipId, start, duration: 3 * SECOND,
+    text: content?.text ?? placeholders[kind],
+    roleText: content?.roleText,
+  }], kind);
 }
 
 export function addSubtitles(
@@ -631,44 +747,50 @@ export function addSubtitles(
 
 function addTextClips(
   project: Project,
-  cues: {id?: string; start: Time; duration: Time; text: string}[],
-  kind: 'title' | 'subtitle',
+  cues: {id?: string; start: Time; duration: Time; text: string; roleText?: string}[],
+  kind: 'title' | TitlePreset,
 ): Project {
   return edit(project, (draft) => {
     const subtitle = kind === 'subtitle';
     const trackName = subtitle ? 'Subtítulos' : 'Títulos';
-    const top = draft.tracks[0];
-    const available =
-      top?.role === 'titles' &&
-      (subtitle ? top.name === trackName : top.name !== 'Subtítulos') &&
-      top.visible &&
-      !top.locked &&
-      top.clips.every(
-        (clip) => cues.every(({start, duration}) =>
-          clip.start + clip.duration <= start || clip.start >= start + duration),
-      );
-    const track = available
-      ? top
-      : { ...createTrack('video', trackName), role: 'titles' as const };
+    const candidates = subtitle ? draft.tracks : draft.tracks.slice(0, 1);
+    const available = candidates.find(track =>
+      track.role === 'titles' &&
+      (subtitle ? track.name === trackName : track.name !== 'Subtítulos') &&
+      track.visible && !track.locked &&
+      track.clips.every(clip => cues.every(({start, duration}) =>
+        clip.start + clip.duration <= start || clip.start >= start + duration)));
+    const track = available ?? { ...createTrack('video', trackName), role: 'titles' as const };
     if (!available) draft.tracks.unshift(track);
-    for (const {id, start, duration, text} of cues) {
+    for (const {id, start, duration, text, roleText} of cues) {
       const asset: Asset = {
-        id: uid(), name: subtitle ? 'Subtítulo' : 'Título',
+        id: uid(), name: subtitle ? 'Subtítulo' : kind === 'lowerThird' ? 'Tercio inferior' : 'Título',
         kind: 'image', duration, mime: '', generated: 'title',
       };
       draft.assets[asset.id] = asset;
+      const sizeAt1080 = subtitle ? 36 : kind === 'lowerThird' ? 48 : 72;
+      const size = kind === 'title' ? sizeAt1080
+        : Math.min(500, Math.max(12, Math.round(draft.settings.height * sizeAt1080 / 1080)));
+      const title: TitleStyle = {
+        text,
+        size,
+        color: '#ffffff',
+        x: kind === 'lowerThird' ? 7 : 50,
+        y: subtitle ? 88 : kind === 'lowerThird' ? 82 : 50,
+        bold: !subtitle,
+      };
+      if (kind !== 'title') {
+        title.preset = kind;
+        title.font = 'Inter';
+      }
+      if (subtitle) title.outline = true;
+      if (kind === 'lowerThird') title.roleText = roleText ?? '';
       track.clips.push({
         ...createClip(asset, start),
         id: id ?? uid(),
-        title: {
-          text,
-          size: subtitle ? Math.max(12, Math.round(draft.settings.height * .046)) : 72,
-          color: '#ffffff',
-          x: 50,
-          y: subtitle ? 88 : 50,
-          bold: true,
-          ...(subtitle ? { outline: true } : {}),
-        },
+        title,
+        ...(kind === 'opening' ? {fadeIn: SECOND / 2} : {}),
+        ...(kind === 'lowerThird' ? {fadeIn: 350000, fadeOut: 350000} : {}),
       });
     }
   });

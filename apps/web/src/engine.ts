@@ -1,14 +1,18 @@
-import {activeClips, fadeEnvelope, transitionNear, sourceSpan, SECOND, type Asset, type Clip, type Project, type Track} from '@corte/core';
+import {activeClips, cinemaHeight, fadeEnvelope, transitionNear, sourceSpan, SECOND, type CinemaSettings, type Asset, type Clip, type Project, type Track} from '@corte/core';
 import type {MediaResource} from './media';
 import {AudioGraph,silentLevels} from './audioGraph';
 import {prepareAudio} from './scheduledAudio';
 import {ChromaRenderer} from './chromaKey';
 import {CinemaRenderer,cinemaGrade} from './cinemaRender';
 
+import {drawTitle,type TitleViewport} from './titleRender';
+
 const MAX_IDLE_MEDIA = 12;
 const IDLE_MEDIA_MS = 2500;
 
 /** The same compositor is used by preview and real-time browser export. */
+export type ClipColorPreview = {id:string;color:NonNullable<Clip['color']>};
+
 export class Compositor {
   private elements = new Map<string,HTMLVideoElement|HTMLAudioElement|HTMLImageElement>();
   private urls = new Map<string,string>();
@@ -16,26 +20,38 @@ export class Compositor {
   private graph?:AudioGraph;
   private transitionCanvas?: HTMLCanvasElement;
   private chroma?: ChromaRenderer;
+  private colorPreview?: ClipColorPreview;
   private cinema?: CinemaRenderer;
   private grade = '';
+  private titleRatio:CinemaSettings['ratio']=0;
+  private titleViewport?:TitleViewport;
   private scheduledBuffers?:Map<string,AudioBuffer>;
   private failed = new Set<string>();
   private lastActive=new Set<string>();private pendingSeek=new Set<string>();private previousTime=0;private sourceMapping=new Map<string,string>();
-  constructor(private canvas: HTMLCanvasElement,private onError?: (message:string)=>void) {}
-  async connectAudio() {
-    this.graph??=new AudioGraph(false);await this.graph.resume();return this.graph.destination.stream;
+  constructor(private canvas: HTMLCanvasElement,private onError?: (message:string)=>void,private silent=false) {}
+  async connectAudio(project:Project) {
+    this.graph??=new AudioGraph(false);await this.graph.resume();await this.graph.prepareDucking(project);return this.graph.destination.stream;
   }
-  async startPreviewAudio(){this.graph??=new AudioGraph(true);await this.graph.resume();}
+  async startPreviewAudio(project:Project){
+    const graph=this.graph??=new AudioGraph(true,this.onError);
+    await graph.resume();
+    await graph.prepareDucking(project);
+  }
   audioClock(){return this.graph?.context.currentTime;}
   async prepareExportAudio(p:Project,resources:Record<string,MediaResource>,signal:AbortSignal){if(this.graph)this.scheduledBuffers=await prepareAudio(this.graph.context,p,resources,signal);return !!this.scheduledBuffers;}
   startExportAudio(p:Project){return this.graph&&this.scheduledBuffers?this.graph.schedule(p,this.scheduledBuffers):this.audioClock();}
   meterLevels=()=>this.graph?.levels()??silentLevels();
   previewBusVolume(id:string,value?:number){this.graph?.overrideBus(id,value);}
   previewClipVolume(id:string,value?:number){this.graph?.overrideClip(id,value);}
+  previewVoiceBand(band:'body'|'clarity'|'deEss',value?:number){this.graph?.previewVoiceBand(band,value);}
   monitorVolume(value:number){this.graph?.setMonitorVolume(value);}
-  render(project: Project, resources: Record<string, MediaResource>, at: number, playing: boolean) {
+  render(project: Project, resources: Record<string, MediaResource>, at: number, playing: boolean, previewCinema?: CinemaSettings, colorPreview?: ClipColorPreview, titleViewport?:TitleViewport) {
     const ctx = this.canvas.getContext('2d')!;
-    this.grade=cinemaGrade(project.settings.cinema);
+    this.colorPreview=colorPreview;
+    const cinema=previewCinema??project.settings.cinema;
+    this.grade=cinemaGrade(cinema);
+    this.titleRatio=cinema?.ratio??0;
+    this.titleViewport=titleViewport;
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     const active = new Map(activeClips(project, at).map(layer => [layer.track.id, layer.clip]));
@@ -76,8 +92,8 @@ export class Compositor {
       }
       if (current) this.drawClip(ctx, current, at, project.settings.height);
     }
-    if(project.settings.cinema){
-      (this.cinema??=new CinemaRenderer()).draw(ctx,project.settings.cinema,at);
+    if(cinema){
+      (this.cinema??=new CinemaRenderer()).draw(ctx,cinema,at);
     }
     const existing = new Set(project.tracks.flatMap(t => t.clips.map(c => c.id)));
     const idle: {id: string; used: number}[] = [];
@@ -141,7 +157,7 @@ export class Compositor {
     }
     const envelope = fadeEnvelope(clip, at);
     if (element.playbackRate !== speed) element.playbackRate = speed;
-    element.muted = !!this.scheduledBuffers || !!clip.audioDetached;
+    element.muted = this.silent || !!this.scheduledBuffers || !!clip.audioDetached;
     if (this.graph && !this.scheduledBuffers) {
       this.graph.attach(clip.id, element, track.id);
       this.graph.clipGain(clip.id, clip.volume, clip.audioDetached ? 0 : envelope);
@@ -166,27 +182,23 @@ export class Compositor {
     const localTime = Math.max(clip.start, Math.min(at, clip.start + clip.duration - 1));
     ctx.save();
     ctx.globalAlpha = weight * clip.opacity * fadeEnvelope(clip, localTime);
-    const color = clip.color;
+    const color = this.colorPreview?.id===clip.id?this.colorPreview.color:clip.color;
     const correction = color ? `brightness(${2 ** color.exposure}) contrast(${color.contrast}) saturate(${color.saturation}) hue-rotate(${color.hue}deg)` : '';
     ctx.filter = [correction,this.grade].filter(Boolean).join(' ') || 'none';
     if (clip.title) {
       const title = clip.title;
       const size = title.size * height / projectHeight * clip.scale;
-      ctx.translate(width * title.x / 100, height * title.y / 100);
-      ctx.rotate(clip.rotation * Math.PI / 180);
-      ctx.fillStyle = title.color;
-      ctx.font = `${title.bold ? '700' : '400'} ${size}px ${title.font ? `"${title.font}", ` : ''}sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const lines = title.text.split(/\r?\n/);
-      ctx.strokeStyle = '#000000';
-      ctx.lineWidth = Math.max(1, size * .12);
-      ctx.lineJoin = 'round';
-      lines.forEach((line, i) => {
-        const y = (i - (lines.length - 1) / 2) * size * 1.2;
-        if (title.outline) ctx.strokeText(line, 0, y, width * .9);
-        ctx.fillText(line, 0, y, width * .9);
-      });
+      const visible=title.preset?cinemaHeight(width,height,this.titleRatio):height;
+      const crop=title.preset?this.titleViewport:undefined;
+      const left=width*(crop?.x??0);
+      const frameWidth=width*(crop?.width??1);
+      const top=Math.max((height-visible)/2,height*(crop?.y??0));
+      const bottom=Math.min((height+visible)/2,height*((crop?.y??0)+(crop?.height??1)));
+      const x=left+frameWidth*title.x/100;
+      const y=top+(bottom-top)*title.y/100;
+      ctx.translate(x,y);
+      ctx.rotate(clip.rotation*Math.PI/180);
+      drawTitle(ctx,title,size,frameWidth,left+frameWidth-x);
     } else if (drawable) {
       const w = drawable instanceof HTMLVideoElement ? drawable.videoWidth : drawable.naturalWidth;
       const h = drawable instanceof HTMLVideoElement ? drawable.videoHeight : drawable.naturalHeight;
@@ -204,7 +216,9 @@ export class Compositor {
       const frame = clip.chromaKey?.enabled
         ? (this.chroma ??= new ChromaRenderer()).render(drawable, w, h, scale, clip.chromaKey)
         : drawable;
-      ctx.drawImage(frame, -w * scale / 2, -h * scale / 2, w * scale, h * scale);
+      const drawWidth=w*scale*(clip.scaleX??1);
+      const drawHeight=h*scale*(clip.scaleY??1);
+      ctx.drawImage(frame,-drawWidth/2,-drawHeight/2,drawWidth,drawHeight);
     }
     ctx.restore();
   }

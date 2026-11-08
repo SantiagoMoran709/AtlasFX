@@ -1,17 +1,21 @@
-const { app, BrowserWindow, session, nativeTheme, Menu, desktopCapturer, screen, dialog } = require('electron');
+const { app, BrowserWindow, session, nativeTheme, Menu, desktopCapturer, screen, dialog, ipcMain } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { installSpeech } = require('./speech.cjs');
 const renderer = path.join(__dirname, app.isPackaged ? 'dist' : '../web/dist');
 const editorUrl = pathToFileURL(path.join(renderer,'index.html')).href;
 app.setName('AtlasFX');
 app.setPath('userData',path.join(app.getPath('appData'),'CorteStudio'));
 if (!app.requestSingleInstanceLock()) app.quit();
 let mainWindow;
+const stopSpeech = installSpeech(ipcMain,event=>
+  event.sender===mainWindow?.webContents && event.senderFrame===event.sender.mainFrame && event.senderFrame?.url===editorUrl);
+app.on('before-quit', stopSpeech);
 app.on('second-instance',() => { if(mainWindow){if(mainWindow.isMinimized())mainWindow.restore();mainWindow.focus();} });
 function open() {
   const win = mainWindow = new BrowserWindow({width:1560,height:980,minWidth:1050,minHeight:720,backgroundColor:'#121212',title:'AtlasFX',autoHideMenuBar:true,
     icon:process.platform==='win32'?path.join(__dirname,'logo.ico'):path.join(renderer,'logo.png'),
-    webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});
+    webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
   win.webContents.setWindowOpenHandler(() => ({action:'deny'}));
   win.webContents.on('will-navigate',event => event.preventDefault());
   win.loadFile(path.join(renderer,'index.html'));

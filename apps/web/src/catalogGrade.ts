@@ -33,6 +33,32 @@ const fragment = `
     c = gain * (c + lift * (1. - clamp(c, 0., 1.)));
     c = pow(max(c, 0.), 1. / gamma);
     c = mix(vec3(luma(c)), c, controls.z);
+    float y = luma(source.rgb);
+    float shadows = 1. - smoothstep(.03, .52, y);
+    float highs = smoothstep(.45, .96, y);
+    float warmth = source.r - source.b;
+    if (style == 3) {
+      c = mix(vec3(luma(c)), c, 1. + .20 * smoothstep(.06, .36, length(source.rgb - vec3(y))));
+      c += vec3(.20, 0., .20) * shadows + vec3(0., .30, .30) * highs;
+      c = max(c, .02);
+    }
+    if (style == 4) c.g += .15 * shadows;
+    if (style == 5) c += vec3(.15, .08, 0.) * highs + vec3(0., .03, .10) * shadows;
+    if (style == 6) c = mix(vec3(luma(c)), c, mix(.20, 1.40, smoothstep(-.04, .12, warmth)));
+    if (style == 7) {
+      float orange = smoothstep(.04, .22, warmth) * smoothstep(.01, .13, source.g - source.b);
+      c = mix(vec3(luma(c)), c, 1. + .05 * orange);
+      c += vec3(.04, -.015, .05) * orange;
+      c = .06 + .94 * c - .15 * highs * max(c - .60, 0.);
+    }
+    if (style == 8) {
+      float cool = smoothstep(.02, .25, max(source.g, source.b) - source.r);
+      c = mix(vec3(luma(c)), c, 1. + .40 * cool);
+    }
+    if (style == 9) {
+      vec3 weights = vec3(.2126 * 1.3, .7152, .0722 * .7);
+      c = vec3(dot(c, weights) / (weights.r + weights.g + weights.b));
+    }
     if (style == 1) c = vec3(classic(luma(c)));
     if (style == 2) c = mix(c, vec3((luma(c) - .5) * 1.3 + .5), .4);
     gl_FragColor = vec4(mix(source.rgb, clamp(c, 0., 1.), intensity), source.a);
@@ -55,6 +81,10 @@ function makeProgram(gl:WebGLRenderingContext) {
   }
   return program;
 }
+
+const styles: Partial<Record<CinemaSettings['look'],number>> = {
+  mono:1, bleach:2, cyberpunk:3, horror:4, goldenHour:5, bloodbath:6, portra:7, velvia:8, fineArt:9,
+};
 
 export function createCatalogGrade(){
   const canvas=document.createElement('canvas');
@@ -99,7 +129,7 @@ export function createCatalogGrade(){
       gl.uniform3f(uniforms.controls,2**grade.exposure,grade.contrast,grade.saturation);
       gl.uniform2f(uniforms.balance,grade.temperature/100,grade.tint/100);
       gl.uniform1f(uniforms.intensity,settings.intensity);
-      gl.uniform1i(uniforms.style,settings.look==='mono'?1:settings.look==='bleach'?2:0);
+      gl.uniform1i(uniforms.style,styles[settings.look]??0);
       gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
       return canvas;
     },

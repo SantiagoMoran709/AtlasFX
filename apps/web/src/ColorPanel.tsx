@@ -2,6 +2,7 @@ import {useEffect,useRef} from 'react';
 import {Palette,RotateCcw} from 'lucide-react';
 import {findClip,setClipProps,type Project} from '@corte/core';
 import {useEditor} from './store';
+import type {ClipColorPreview} from './engine';
 import {Parameter} from './Controls';
 const neutral = {exposure:0, contrast:1, saturation:1, hue:0};
 const presets = [
@@ -12,16 +13,27 @@ const presets = [
 ];
 
 export function ColorPanel({project:p,canvas,disabled}:{project:Project;canvas:React.RefObject<HTMLCanvasElement>;disabled:boolean}){
- const {selected,apply}=useEditor();const clip=selected?findClip(p,selected):undefined;const visual=clip&&!clip.audioOnly&&p.assets[clip.assetId].kind!=='audio';const color=clip?.color??neutral;const scope=useRef<HTMLCanvasElement>(null);
+ const {selected,apply}=useEditor();const clip=selected?findClip(p,selected):undefined;const visual=clip&&!clip.audioOnly&&p.assets[clip.assetId]?.kind!=='audio';const color=clip?.color??neutral;const scope=useRef<HTMLCanvasElement>(null);
  useEffect(()=>{const sample=document.createElement('canvas');sample.width=160;sample.height=90;const input=sample.getContext('2d',{willReadFrequently:true})!;const draw=()=>{const out=scope.current?.getContext('2d');if(!out||!canvas.current)return;input.drawImage(canvas.current,0,0,160,90);const data=input.getImageData(0,0,160,90).data;const bins=[new Uint32Array(256),new Uint32Array(256),new Uint32Array(256)];for(let i=0;i<data.length;i+=4){bins[0][data[i]]++;bins[1][data[i+1]]++;bins[2][data[i+2]]++;}const w=scope.current!.width,h=scope.current!.height;out.fillStyle='#0c0c0e';out.fillRect(0,0,w,h);out.strokeStyle='#252529';for(let y=0;y<h;y+=h/4){out.beginPath();out.moveTo(0,y);out.lineTo(w,y);out.stroke();}bins.forEach((channel,i)=>{let max=1;for(const n of channel)max=Math.max(max,n);out.beginPath();out.moveTo(0,h);for(let x=0;x<256;x++)out.lineTo(x*w/255,h-Math.log1p(channel[x])/Math.log1p(max)*(h-12));out.lineTo(w,h);out.closePath();out.fillStyle=['#ef656355','#69c88a55','#6aa1ec55'][i];out.fill();out.strokeStyle=['#ef6563','#69c88a','#6aa1ec'][i];out.stroke();});};draw();const timer=setInterval(draw,250);return()=>clearInterval(timer);},[canvas]);
  const update=(key:keyof typeof color,value:number)=>{if(clip)apply(d=>setClipProps(d,clip.id,{color:{...color,[key]:value}}));};
- return <div className="color-panel"><div className="dock-description"><Palette size={15}/><span>Corrección básica del clip</span><button disabled={!visual||disabled} title="Restablecer color" aria-label="Restablecer color" onClick={()=>clip&&apply(d=>setClipProps(d,clip.id,{color:neutral}))}><RotateCcw size={13}/></button></div>{!visual&&<p className="dock-empty">Selecciona un clip de video o imagen.</p>}<fieldset className="color-filters" disabled={!visual||disabled}>
-   <legend>Filtros rápidos</legend>
+ return <div className="color-panel"><div className="dock-description"><Palette size={15}/><span>Corrección del clip</span><button disabled={!visual||disabled} title="Restablecer color" aria-label="Restablecer color" onClick={()=>clip&&apply(d=>setClipProps(d,clip.id,{color:neutral}))}><RotateCcw size={13}/></button></div>{!visual&&<p className="dock-empty">Selecciona un clip de video o imagen.</p>}<fieldset className="color-adjustments" disabled={!visual||disabled}><legend>Ajustes manuales</legend><Parameter label="Exposición" min={-2} max={2} step={.1} unit=" EV" value={color.exposure} onCommit={n=>update('exposure',n)}/><Parameter label="Contraste" min={0} max={2} step={.05} value={color.contrast} onCommit={n=>update('contrast',n)}/><Parameter label="Saturación" min={0} max={2} step={.05} value={color.saturation} onCommit={n=>update('saturation',n)}/><Parameter label="Matiz" min={-180} max={180} unit="°" value={color.hue} onCommit={n=>update('hue',n)}/></fieldset><div className="scope-heading">Histograma RGB · imagen del programa</div><canvas className="rgb-scope" ref={scope} width={480} height={135} aria-label="Histograma RGB real del programa"/><div className="scope-scale"><span>0 · Sombras</span><span>255 · Luces</span></div></div>;
+}
+
+export function QuickColorFilters({project:p,disabled,onPreview}:{project:Project;disabled:boolean;onPreview:(value?:ClipColorPreview)=>void}){
+ const {selected,apply}=useEditor();
+ const clip=selected?findClip(p,selected):undefined;
+ const visual=clip&&!clip.audioOnly&&p.assets[clip.assetId]?.kind!=='audio';
+ const color=clip?.color??neutral;
+ useEffect(()=>()=>onPreview(),[onPreview,p,selected,disabled]);
+ return <><fieldset className="color-filters" disabled={!visual||disabled}>
+   <legend>Filtros rápidos · clip seleccionado</legend>
    <div className="filter-options">{presets.map(preset => {
     const active = color.exposure === preset.color.exposure && color.contrast === preset.color.contrast
       && color.saturation === preset.color.saturation && color.hue === preset.color.hue;
+    const preview=()=>{if(clip&&visual&&!disabled)onPreview({id:clip.id,color:preset.color});};
     return <button key={preset.name} type="button" aria-pressed={active}
-      onClick={()=>clip&&apply(d=>setClipProps(d,clip.id,{color:preset.color}))}>{preset.name}</button>;
+      onPointerEnter={preview} onPointerLeave={()=>onPreview()} onFocus={preview} onBlur={()=>onPreview()}
+      onClick={()=>{onPreview();if(clip)apply(d=>setClipProps(d,clip.id,{color:preset.color}));}}>{preset.name}</button>;
    })}</div>
-  </fieldset><fieldset className="color-adjustments" disabled={!visual||disabled}><legend>Ajustes manuales</legend><Parameter label="Exposición" min={-2} max={2} step={.1} unit=" EV" value={color.exposure} onCommit={n=>update('exposure',n)}/><Parameter label="Contraste" min={0} max={2} step={.05} value={color.contrast} onCommit={n=>update('contrast',n)}/><Parameter label="Saturación" min={0} max={2} step={.05} value={color.saturation} onCommit={n=>update('saturation',n)}/><Parameter label="Matiz" min={-180} max={180} unit="°" value={color.hue} onCommit={n=>update('hue',n)}/></fieldset><div className="scope-heading">Histograma RGB · imagen del programa</div><canvas className="rgb-scope" ref={scope} width={480} height={135} aria-label="Histograma RGB real del programa"/><div className="scope-scale"><span>0 · Sombras</span><span>255 · Luces</span></div></div>;
+  </fieldset>{!visual&&<p className="hint">Selecciona un clip de video o imagen para usar estos filtros.</p>}</>;
 }

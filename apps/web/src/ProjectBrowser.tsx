@@ -13,12 +13,31 @@ export function ProjectBrowser({projects,currentId,busy,initialCreate=false,onOp
   const [remove,setRemove]=useState<Project>();const [deleting,setDeleting]=useState(false);const [thumbnails,setThumbnails]=useState<Record<string,string>>({});
   const thumbs=useRef<Record<string,string>>({});
   useEffect(()=>setSelected(currentId),[currentId]);
-  useEffect(()=>{let canceled=false;void(async()=>{
-    for(const p of projects){if(thumbs.current[p.id])continue;const a=Object.values(p.assets).find(a=>a.kind!=='audio'&&!a.generated);if(!a)continue;
-      try{const blob=await loadMedia(a.id);if(!blob||canceled)continue;const media=await importMedia(new File([blob],a.name,{type:a.mime||blob.type}));URL.revokeObjectURL(media.resource.url);if(canceled)return;if(media.resource.thumbnail){thumbs.current[p.id]=media.resource.thumbnail;setThumbnails({...thumbs.current});}}
-      catch{/* A missing source does not prevent the project from being opened. */}
-    }
-  })();return()=>{canceled=true;};},[projects]);
+  useEffect(()=>{
+    let canceled=false;
+    void (async()=>{
+      for(const project of projects){
+        if(canceled)return;
+        if(thumbs.current[project.id])continue;
+        const asset=Object.values(project.assets).find(asset=>asset.kind!=='audio'&&!asset.generated);
+        if(!asset)continue;
+        try{
+          const blob=await loadMedia(asset.id);
+          if(canceled)return;
+          if(!blob)continue;
+          const {resource}=await importMedia(new File([blob],asset.name,{type:asset.mime||blob.type}));
+          URL.revokeObjectURL(resource.url);
+          if(canceled)return;
+          const preview=resource.videoPreview??resource.thumbnail;
+          if(preview){
+            thumbs.current[project.id]=preview;
+            setThumbnails({...thumbs.current});
+          }
+        }catch{/* A missing source does not prevent the project from being opened. */}
+      }
+    })();
+    return()=>{canceled=true;};
+  },[projects]);
   const filtered=projects.filter(p=>p.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())).sort((a,b)=>sort==='name'?a.name.localeCompare(b.name):b.updatedAt.localeCompare(a.updatedAt));
   const chosen=projects.find(p=>p.id===selected);
   function create(){const value=name.trim();if(!value)return;setNewProject(false);onCreate(value);}
@@ -30,7 +49,7 @@ export function ProjectBrowser({projects,currentId,busy,initialCreate=false,onOp
       <div className="projects-section-label"><span>Todos los proyectos <b>{filtered.length}</b></span></div>
       <div className={`project-collection ${view}`}>
         {!query&&<button className="project-create-tile" disabled={busy} onClick={()=>{setName('Proyecto sin título');setNewProject(true);}}><span className="project-create-symbol"><Plus size={24}/></span><strong>Crear proyecto</strong><small>Un espacio para tu próxima historia</small></button>}
-        {filtered.map(p=><article key={p.id} className={`project-tile ${selected===p.id?'selected':''}`}><button className="project-tile-main" aria-pressed={selected===p.id} aria-label={`Seleccionar proyecto ${p.name}`} disabled={busy} onClick={()=>setSelected(p.id)} onDoubleClick={()=>onOpen(p)}><div className="project-cover">{thumbnails[p.id]?<img src={thumbnails[p.id]} alt=""/>:<div className="project-cover-empty"><Clapperboard size={29}/><span>{Object.keys(p.assets).length?'Proyecto sin miniatura':'Proyecto vacío'}</span></div>}<span className="project-format-badge">{p.settings.width} × {p.settings.height}</span>{selected===p.id&&<span className="project-selected-check"><Check size={12}/></span>}<span className="project-duration-badge">{durationLabel(p)}</span></div><div className="project-tile-info"><strong>{p.name||'Sin título'}</strong><span><Clock3 size={11}/>{dateLabel(p.updatedAt)}<i/> {Object.values(p.assets).filter(asset=>!asset.generated).length} medios</span></div></button><button className="project-delete" aria-label={`Eliminar proyecto ${p.name}`} title="Eliminar de la biblioteca" disabled={busy} onClick={()=>setRemove(p)}><Trash2 size={13}/></button></article>)}
+        {filtered.map(p=><article key={p.id} className={`project-tile ${selected===p.id?'selected':''}`}><button className="project-tile-main" aria-pressed={selected===p.id} aria-label={`Seleccionar proyecto ${p.name}`} disabled={busy} onClick={()=>setSelected(p.id)} onDoubleClick={()=>onOpen(p)}><div className="project-cover">{thumbnails[p.id]?<img src={thumbnails[p.id]} alt="" draggable={false}/>:<div className="project-cover-empty"><Clapperboard size={29}/><span>{Object.keys(p.assets).length?'Proyecto sin miniatura':'Proyecto vacío'}</span></div>}<span className="project-format-badge">{p.settings.width} × {p.settings.height}</span>{selected===p.id&&<span className="project-selected-check"><Check size={12}/></span>}<span className="project-duration-badge">{durationLabel(p)}</span></div><div className="project-tile-info"><strong>{p.name||'Sin título'}</strong><span><Clock3 size={11}/>{dateLabel(p.updatedAt)}<i/> {Object.values(p.assets).filter(asset=>!asset.generated).length} medios</span></div></button><button className="project-delete" aria-label={`Eliminar proyecto ${p.name}`} title="Eliminar de la biblioteca" disabled={busy} onClick={()=>setRemove(p)}><Trash2 size={13}/></button></article>)}
       </div>{!filtered.length&&query&&<div className="project-search-empty"><Search size={26}/><strong>No encontramos ese proyecto</strong><span>Prueba con otro nombre.</span></div>}
       </main></div>
     <footer className="projects-bottom"><span><span className="status-dot"/> {projects.length} proyectos en tu biblioteca</span><div>{chosen&&<span className="selected-project-caption">{chosen.name}</span>}<button className="button primary" disabled={!chosen||busy} onClick={()=>chosen&&onOpen(chosen)}>Abrir proyecto <ArrowUpRight size={14}/></button></div></footer>

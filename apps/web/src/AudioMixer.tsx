@@ -1,6 +1,6 @@
 import {useEffect,useRef} from 'react';
 import {Volume2,VolumeX,RotateCcw} from 'lucide-react';
-import {edit,type Project} from '@corte/core';
+import {DEFAULT_AUDIO_MIX,edit,type AudioMixSettings,type Project} from '@corte/core';
 import {type Compositor} from './engine';
 import {type MeterLevels} from './audioGraph';
 import {useEditor} from './store';
@@ -21,7 +21,104 @@ export function LevelMeter({read,label,compact=false}:{read:()=>[number,number];
  return <div className={`level-meter ${compact?'compact-meter':''}`}><canvas ref={canvas} width={compact?66:64} height={compact?230:174} role="img" aria-label={`Medidor de señal real ${label}`}/><output ref={output} aria-label={`Nivel ${label}`} className="meter-readout">−∞ dBFS</output><button className="reset-peak" aria-label={`Restablecer pico ${label}`} title="Restablecer indicador de pico" onClick={()=>{peak.current=-60;}}><RotateCcw size={11}/></button></div>;
 }
 export function MasterMeter({read}:{read:()=>MeterLevels}){return <aside className="master-meter"><span>MASTER</span><LevelMeter compact label="Master" read={()=>read().master}/><small>dBFS</small></aside>;}
-export function AudioMixer({project:p,engine,disabled}:{project:Project;engine:React.MutableRefObject<Compositor|undefined>;disabled:boolean}){
- const {apply}=useEditor();const levels=()=>engine.current?.meterLevels();
- return <section className="audio-mixer" aria-label="Mezclador de audio"><div className="mixer-channels">{[...p.tracks.map(t=>({id:t.id,name:t.name,volume:t.volume??1,muted:t.muted,locked:t.locked})),{id:'master',name:'Master',volume:p.settings.masterVolume??1,muted:false,locked:false}].map(t=><section className={`mixer-channel ${t.id==='master'?'master-channel':''}`} key={t.id}><strong>{t.name}</strong><span className="channel-gain">{t.volume<=.001?'−∞':gainToDb(t.volume).toFixed(1)} dB</span><div className="channel-controls"><Parameter vertical label={`Ganancia ${t.name}`} min={-60} max={6} step={.5} unit=" dB" value={gainToDb(t.volume)} disabled={disabled||t.locked} onPreview={db=>engine.current?.previewBusVolume(t.id,db===undefined?undefined:dbToGain(db))} onCommit={db=>apply(d=>edit(d,x=>{if(t.id==='master')x.settings.masterVolume=dbToGain(db);else{const track=x.tracks.find(a=>a.id===t.id)!;if(track.locked)throw new Error('La pista está bloqueada.');track.volume=dbToGain(db);}}))}/><LevelMeter label={t.name} read={()=>t.id==='master'?levels()?.master??[-60,-60]:levels()?.tracks[t.id]??[-60,-60]}/></div>{t.id!=='master'?<button className={`channel-mute ${t.muted?'muted-channel':''}`} disabled={disabled} aria-label={`${t.muted?'Activar':'Silenciar'} canal ${t.name}`} onClick={()=>apply(d=>edit(d,x=>{x.tracks.find(a=>a.id===t.id)!.muted=!t.muted;}))}>{t.muted?<VolumeX size={14}/>:<Volume2 size={14}/>} {t.muted?'Mudo':'Silenciar'}</button>:<button className="channel-mute" disabled={disabled} onClick={()=>apply(d=>edit(d,x=>{x.settings.masterVolume=1;}))}>Restablecer 0 dB</button>}</section>)}</div></section>;
+const voiceBands=[
+  {band:'body',label:'Cuerpo',min:-3,max:6},
+  {band:'clarity',label:'Claridad',min:-2,max:4},
+  {band:'deEss',label:'Suavizar eses',min:-4,max:0},
+] as const;
+
+export function AudioMixer({project,engine,disabled}:{
+  project:Project;engine:React.MutableRefObject<Compositor|undefined>;disabled:boolean;
+}){
+  const {apply}=useEditor();
+  const mix=project.settings.audioMix??DEFAULT_AUDIO_MIX;
+  const tracks=project.tracks.filter(track=>track.role!=='titles');
+  const voice=tracks.find(track=>track.id===mix.voiceTrackId);
+  const music=tracks.find(track=>track.id===mix.musicTrackId);
+  const hasDuckingTracks=!!voice&&!!music&&voice.id!==music.id;
+
+  function updateMix(changes:Partial<AudioMixSettings>){
+    apply(current=>edit(current,draft=>{
+      draft.settings.audioMix={...DEFAULT_AUDIO_MIX,...draft.settings.audioMix,...changes};
+    }));
+  }
+
+  const gainPreview=(trackId:string)=>(db?:number)=>
+    engine.current?.previewBusVolume(trackId,db===undefined?undefined:dbToGain(db));
+  const setMaster=(gain:number)=>apply(current=>edit(current,draft=>{draft.settings.masterVolume=gain;}));
+
+  return <section className="audio-mixer" aria-label="Mezclador de audio">
+    <div className="audio-mix-tools">
+      <fieldset disabled={disabled}>
+        <legend>Voz de Cine</legend>
+        <label className="property-field">Pista de voz
+          <select value={voice?.id??''} onChange={event=>{
+            const id=event.target.value||undefined;
+            updateMix({voiceTrackId:id,...(!id||id===music?.id?{ducking:false}:{})});
+          }}>
+            <option value="">Seleccionar pista</option>
+            {tracks.map(track=><option key={track.id} value={track.id}>{track.name}</option>)}
+          </select>
+        </label>
+        <label className="property-field">Activar ecualizador
+          <input type="checkbox" checked={mix.eqEnabled} disabled={!voice}
+            onChange={event=>updateMix({eqEnabled:event.target.checked})}/>
+        </label>
+        {voiceBands.map(({band,...props})=><Parameter key={band} {...props} unit=" dB" step={.5} value={mix[band]}
+          disabled={!voice||!mix.eqEnabled||disabled}
+          onPreview={value=>engine.current?.previewVoiceBand(band,value)}
+          onCommit={value=>updateMix({[band]:value})}/>)}
+      </fieldset>
+
+      <fieldset disabled={disabled}>
+        <legend>Reducción de música de fondo</legend>
+        <label className="property-field">Pista de música
+          <select value={music&&music.id!==voice?.id?music.id:''} onChange={event=>{
+            const id=event.target.value||undefined;
+            updateMix({musicTrackId:id,...(!id?{ducking:false}:{})});
+          }}>
+            <option value="">Seleccionar pista</option>
+            {tracks.filter(track=>track.id!==voice?.id).map(track=><option key={track.id} value={track.id}>{track.name}</option>)}
+          </select>
+        </label>
+        <label className="property-field">Activar Auto-Ducking
+          <input type="checkbox" checked={mix.ducking&&hasDuckingTracks} disabled={!hasDuckingTracks}
+            onChange={event=>updateMix({ducking:event.target.checked})}/>
+        </label>
+        <p className="hint">Elegí pistas distintas. La música baja 12 dB cuando la voz supera −30 dBFS.</p>
+      </fieldset>
+
+      <fieldset disabled={disabled}>
+        <legend>Ganancia general</legend>
+        <Parameter label="Ganancia Master" min={-60} max={6} step={.5} unit=" dB"
+          value={gainToDb(project.settings.masterVolume??1)}
+          onPreview={gainPreview('master')} onCommit={db=>setMaster(dbToGain(db))}/>
+        <button className="channel-mute" type="button" onClick={()=>setMaster(1)}>Restablecer 0 dB</button>
+      </fieldset>
+    </div>
+    <details className="audio-channel-details">
+      <summary>Mezclador por pistas</summary>
+      <div className="mixer-channels">
+        {project.tracks.map(track=><section className="mixer-channel" key={track.id}>
+          <strong>{track.name}</strong>
+          <span className="channel-gain">{gainToDb(track.volume??1).toFixed(1)} dB</span>
+          <div className="channel-controls">
+            <Parameter vertical label={`Ganancia ${track.name}`} min={-60} max={6} step={.5} unit=" dB"
+              value={gainToDb(track.volume??1)} disabled={disabled||track.locked} onPreview={gainPreview(track.id)}
+              onCommit={db=>apply(current=>edit(current,draft=>{
+                const target=draft.tracks.find(item=>item.id===track.id);
+                if(target&&!target.locked)target.volume=dbToGain(db);
+              }))}/>
+            <LevelMeter label={track.name} read={()=>engine.current?.meterLevels().tracks[track.id]??[-60,-60]}/>
+          </div>
+          <button type="button" className={`channel-mute ${track.muted?'muted-channel':''}`}
+            disabled={disabled} aria-label={`${track.muted?'Activar':'Silenciar'} canal ${track.name}`}
+            onClick={()=>apply(current=>edit(current,draft=>{
+              const target=draft.tracks.find(item=>item.id===track.id);
+              if(target)target.muted=!target.muted;
+            }))}>{track.muted?<VolumeX size={14}/>:<Volume2 size={14}/>} {track.muted?'Mudo':'Silenciar'}</button>
+        </section>)}
+      </div>
+    </details>
+  </section>;
 }
