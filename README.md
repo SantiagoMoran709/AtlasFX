@@ -83,7 +83,13 @@ Atajos: Espacio reproduce/pausa; S o Ctrl+B divide; Supr elimina; Ctrl+Z deshace
 
 ### Audio de exportación
 
-Se decodifican los medios compatibles y se programan fuentes de audio y sus fundidos sobre el reloj de Web Audio, con un presupuesto estimado de 192 MiB de PCM. Esto mantiene el audio independiente del ritmo de dibujo de la interfaz. Para medios que superan ese presupuesto o que no se pueden decodificar completamente, se usa streaming del navegador y el diálogo muestra un aviso: esta ruta puede presentar cortes. La exportación de medios largos necesita la futura ruta por bloques o FFmpeg para ser fiable. El video continúa capturándose en tiempo real.
+Se decodifican los medios compatibles y se programan fuentes de audio y sus fundidos sobre el reloj de Web Audio, con un presupuesto estimado de 192 MiB. Esto mantiene el audio independiente del ritmo de dibujo de la interfaz. Para medios que superan ese presupuesto o que no se pueden decodificar completamente, se usa streaming del navegador. El diálogo avisa que esa ruta puede presentar cortes.
+
+### MP4 con FFmpeg en Windows
+
+Coloca un `ffmpeg.exe` de confianza junto a `AtlasFX.exe` en la carpeta del ZIP extraído, o agrégalo al PATH. La compilación de FFmpeg debe incluir `libx264` y `aac`. Reinicia AtlasFX y selecciona **MP4 · FFmpeg (escritorio)** en **Exportar video**. El ZIP de AtlasFX funciona por sí solo con los formatos integrados. [Descargas de FFmpeg](https://ffmpeg.org/download.html)
+
+Esta opción conserva la composición y mezcla de AtlasFX, captura en tiempo real y después codifica un MP4 H.264/AAC mediante FFmpeg. La revisión y el guardado siguen disponibles. La cadencia de la captura todavía depende del equipo.
 
 ## Guardado y medios
 
@@ -107,7 +113,7 @@ La exportación usa MediaRecorder y captura de canvas **en tiempo real**: una se
 Pendiente del diseño original:
 
 - Demux MP4, WebCodecs, caché limitada por GOP, workers, WebGL y sincronización A/V determinista.
-- Exportación determinista con mux MP4, audio en bloques para medios largos y FFmpeg nativo con progreso y cancelación.
+- Composición determinista por fotograma y audio en bloques para medios largos.
 - Separar media, renderer, audio, playback, export, platform y ui en paquetes con adaptadores inyectables.
 - Filtros avanzados, keyframes, velocidad, ondas de audio y proxies. Ya hay títulos editables, disolvencia cruzada, barrido, fundidos lineales del clip y corrección básica de color.
 - Paneles redimensionables, selección múltiple, múltiples secuencias por proyecto y virtualización. Los ajustes de resolución y FPS ya están disponibles.

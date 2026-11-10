@@ -175,21 +175,35 @@ export function createClip(asset: Asset, start = 0): Clip {
     rotation: 0,
   };
 }
-export const endTime = (p: Project): Time =>
-  Math.max(
-    0,
-    ...p.tracks.flatMap((t) => t.clips.map((c) => c.start + c.duration)),
-  );
+export function endTime(p: Project): Time {
+  let end = 0;
+  for (const track of p.tracks) {
+    const last = track.clips.at(-1);
+    if (last) end = Math.max(end, last.start + last.duration);
+  }
+  return end;
+}
 export const findClip = (p: Project, id: string) =>
   p.tracks.flatMap((t) => t.clips).find((c) => c.id === id);
+export function firstClipEndingAfter(clips: readonly Clip[], time: Time) {
+  let left = 0;
+  let right = clips.length;
+  while (left < right) {
+    const middle = Math.floor((left + right) / 2);
+    const clip = clips[middle];
+    if (clip.start + clip.duration <= time) left = middle + 1;
+    else right = middle;
+  }
+  return left;
+}
 export function activeClips(p: Project, time: Time) {
-  return p.tracks
-    .filter((t) => t.visible)
-    .flatMap((track) =>
-      track.clips
-        .filter((c) => c.start <= time && c.start + c.duration > time)
-        .map((clip) => ({ track, clip, asset: p.assets[clip.assetId] })),
-    );
+  return p.tracks.flatMap((track) => {
+    if (!track.visible) return [];
+    const clip = track.clips[firstClipEndingAfter(track.clips, time)];
+    return clip && clip.start <= time
+      ? [{ track, clip, asset: p.assets[clip.assetId] }]
+      : [];
+  });
 }
 function check(ok: unknown, message: string): asserts ok {
   if (!ok) throw new Error(message);

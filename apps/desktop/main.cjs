@@ -1,15 +1,25 @@
 const { app, BrowserWindow, session, nativeTheme, Menu, desktopCapturer, screen, dialog, ipcMain } = require('electron');
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
+const { realpathSync } = require('node:fs');
+const { fileURLToPath } = require('node:url');
 const { installSpeech } = require('./speech.cjs');
+const { installFFmpeg } = require('./ffmpeg.cjs');
 const renderer = path.join(__dirname, app.isPackaged ? 'dist' : '../web/dist');
-const editorUrl = pathToFileURL(path.join(renderer,'index.html')).href;
+const editorFile = path.join(renderer,'index.html');
+function isEditorUrl(url) {
+  try {
+    return path.relative(realpathSync(editorFile),realpathSync(fileURLToPath(url)))==='';
+  } catch { return false; }
+}
 app.setName('AtlasFX');
-app.setPath('userData',path.join(app.getPath('appData'),'CorteStudio'));
+const userDataDir=app.commandLine.getSwitchValue('user-data-dir');
+app.setPath('userData',path.isAbsolute(userDataDir)?userDataDir:path.join(app.getPath('appData'),'CorteStudio'));
 if (!app.requestSingleInstanceLock()) app.quit();
 let mainWindow;
-const stopSpeech = installSpeech(ipcMain,event=>
-  event.sender===mainWindow?.webContents && event.senderFrame===event.sender.mainFrame && event.senderFrame?.url===editorUrl);
+const isEditor = event =>
+  event.sender===mainWindow?.webContents && event.senderFrame===event.sender.mainFrame && isEditorUrl(event.senderFrame?.url);
+const stopSpeech = installSpeech(ipcMain,isEditor);
+const discardExport = installFFmpeg(ipcMain,isEditor,app);
 app.on('before-quit', stopSpeech);
 app.on('second-instance',() => { if(mainWindow){if(mainWindow.isMinimized())mainWindow.restore();mainWindow.focus();} });
 function open() {
@@ -18,14 +28,49 @@ function open() {
     webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
   win.webContents.setWindowOpenHandler(() => ({action:'deny'}));
   win.webContents.on('will-navigate',event => event.preventDefault());
-  win.loadFile(path.join(renderer,'index.html'));
-  win.on('closed',() => { mainWindow = null; });
+  let allowClose=false;
+  let closeId=0;
+  let closeTimer;
+  function finishCloseRequest() {
+    clearTimeout(closeTimer);
+    closeTimer=undefined;
+  }
+  async function closeResult(event,id,saved) {
+    if(event.sender!==win.webContents||event.senderFrame!==win.webContents.mainFrame||
+        !isEditorUrl(event.senderFrame?.url)||!closeTimer||id!==closeId)return;
+    finishCloseRequest();
+    if(saved===true){
+      await discardExport().catch(console.error);
+      if(win.isDestroyed())return;
+      allowClose=true;
+      win.close();
+    }
+  }
+  ipcMain.on('atlasfx:close-result',closeResult);
+  win.on('close',event=>{
+    if(allowClose||win.webContents.isCrashed()||!isEditorUrl(win.webContents.getURL()))return;
+    event.preventDefault();
+    if(closeTimer)return;
+    closeTimer=setTimeout(()=>{
+      finishCloseRequest();
+      void dialog.showMessageBox(win,{type:'warning',message:'AtlasFX no pudo confirmar el guardado. La ventana seguirá abierta.'});
+    },15000);
+    win.webContents.send('atlasfx:close-requested',++closeId);
+  });
+  win.webContents.on('will-prevent-unload',()=>{allowClose=false;});
+  win.loadFile(editorFile);
+  win.on('closed',() => {
+    finishCloseRequest();
+    ipcMain.removeListener('atlasfx:close-result',closeResult);
+    mainWindow = null;
+    void discardExport().catch(console.error);
+  });
 }
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
   Menu.setApplicationMenu(null);
   const fromEditor = (contents,details) =>
-    contents === mainWindow?.webContents && details.isMainFrame && details.requestingUrl === editorUrl;
+    contents === mainWindow?.webContents && details.isMainFrame && isEditorUrl(details.requestingUrl);
   session.defaultSession.setPermissionCheckHandler((contents,permission,_origin,details) =>
     fromEditor(contents,details) && (permission === 'display-capture' || (permission === 'media' && details.mediaType === 'video')));
   session.defaultSession.setPermissionRequestHandler((contents,permission,callback,details) => {
@@ -34,7 +79,7 @@ app.whenReady().then(() => {
   });
   session.defaultSession.setDisplayMediaRequestHandler(async (request,callback) => {
     const window = mainWindow;
-    if(!window || request.frame !== window.webContents.mainFrame || request.frame.url !== editorUrl ||
+    if(!window || request.frame !== window.webContents.mainFrame || !isEditorUrl(request.frame.url) ||
         !request.userGesture || !request.videoRequested || request.audioRequested) {
       callback(null);
       return;

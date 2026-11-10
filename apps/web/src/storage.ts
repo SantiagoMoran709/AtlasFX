@@ -17,8 +17,30 @@ async function get<T>(store: string,key: string): Promise<T|undefined> {
 export const saveMedia = (id: string,file: Blob) => put('media',file,id);
 export const loadMedia = (id: string) => get<Blob>('media',id);
 export const saveProject = (p: Project) => { serialize(p); return put('projects',p); };
-export async function listProjects(): Promise<Project[]> {
-  const d=await database();return new Promise((resolve,reject)=>{const req=d.transaction('projects').objectStore('projects').getAll();req.onsuccess=()=>resolve((req.result as Project[]).map(p=>parseProject(JSON.stringify(p))).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)));req.onerror=()=>reject(req.error);});
+export function readProjectRecords(records: unknown[]) {
+  const projects: Project[] = [];
+  let skipped = 0;
+  for (const record of records) {
+    try {
+      const project = parseProject(JSON.stringify(record));
+      if (typeof project.updatedAt !== 'string') throw new Error('Fecha de proyecto no válida.');
+      projects.push(project);
+    }
+    catch { skipped++; }
+  }
+  projects.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
+  return {projects, skipped};
+}
+export async function listProjects() {
+  const d = await database();
+  return new Promise<ReturnType<typeof readProjectRecords>>((resolve,reject)=>{
+    const req = d.transaction('projects').objectStore('projects').getAll();
+    req.onsuccess = () => {
+      try { resolve(readProjectRecords(req.result)); }
+      catch (error) { reject(error); }
+    };
+    req.onerror = () => reject(req.error);
+  });
 }
 export async function deleteProject(id: string) {
   const d=await database();return new Promise<void>((resolve,reject)=>{const tx=d.transaction('projects','readwrite');tx.objectStore('projects').delete(id);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);});

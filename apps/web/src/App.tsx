@@ -18,9 +18,10 @@ import {SourceMonitor} from './SourceMonitor';
 import {ProjectBrowser} from './ProjectBrowser';
 import {loadViewPreferences,saveViewPreferences} from './preferences';
 import {useEditor} from './store';
-import {importMedia,isLegacyThumbnailName,isVideoThumbnailCopy,videoThumbnailSignatures,type MediaResource} from './media';
+import {importMedia,isVideoThumbnailCopy,videoThumbnailSignatures,type MediaResource} from './media';
 import {Compositor,type ClipColorPreview} from './engine';
 import * as storage from './storage';
+import {ProjectSave} from './projectSave';
 import {exportVideo,formats,exportFrames,exportSourceSize,type ExportFit,type ExportFrame} from './exporter';
 import {RenderPreview,type RenderReview} from './RenderPreview';
 import {ExportFramingPreview} from './ExportFramingPreview';
@@ -28,11 +29,16 @@ import {TextPresets} from './TextPresets';
 import {SubtitleDialog} from './SubtitleDialog';
 
 const errorText=(e:unknown)=>e instanceof Error?e.message:String(e);
+declare global {
+  interface Window {
+    atlasfxWindow?: {onCloseRequested: (save: () => Promise<boolean>) => () => void};
+  }
+}
 const resolutionOptions=[{label:'1080p · Full HD',width:1920,height:1080},{label:'720p · HD',width:1280,height:720},{label:'480p · Compacto',width:854,height:480}];
 export function App(){
   const {h,selected,select,apply,undo,redo,open,message,error}=useEditor();const p=h.present;
   const [resources,setResources]=useState<Record<string,MediaResource>>({});const [playing,setPlaying]=useState(false);const [zoom,setZoom]=useState(DEFAULT_TIMELINE_ZOOM);
-  const [tab,setTab]=useState<'all'|Kind>('all');const [query,setQuery]=useState('');const [busy,setBusy]=useState(false);const [saved,setSaved]=useState('Guardando…');const [initialized,setInitialized]=useState(false);
+  const [tab,setTab]=useState<'all'|Kind>('all');const [query,setQuery]=useState('');const [busy,setBusy]=useState(false);const [saved,setSaved]=useState('Guardado');const [initialized,setInitialized]=useState(false);
   const [home,setHome]=useState(true);const [createOnHome,setCreateOnHome]=useState(false);const [recent,setRecent]=useState<Project[]>([]);const [exportOpen,setExportOpen]=useState(false);const [progress,setProgress]=useState<number|null>(null);
   const [exportFrameId,setExportFrameId]=useState('project');
   const [exportFit,setExportFit]=useState<ExportFit>();
@@ -63,8 +69,17 @@ export function App(){
   const canvasScale=fitViewer?Math.min(viewportSize.width/p.settings.width,viewportSize.height/p.settings.height):viewerZoom;
   const displaySize={width:p.settings.width*canvasScale,height:p.settings.height*canvasScale};
   const assetDragActive=useRef(false);
-  const timeRef=useRef(0);const stateRef=useRef({p,resources,playing,zoom,monitorGain,looping,exportOpen});stateRef.current={p,resources,playing,zoom,monitorGain,looping,exportOpen};const engine=useRef<Compositor>();const abort=useRef<AbortController>();const generation=useRef(0);const booted=useRef(false);const saveQueue=useRef<Promise<unknown>>(Promise.resolve());
-  const availableFormats=formats();const duration=endTime(p);const clip=selected?findClip(p,selected):undefined;
+  const timeRef=useRef(0);const stateRef=useRef({p,resources,playing,zoom,monitorGain,looping,exportOpen});stateRef.current={p,resources,playing,zoom,monitorGain,looping,exportOpen};const engine=useRef<Compositor>();const abort=useRef<AbortController>();const generation=useRef(0);const booted=useRef(false);
+  const projectOperation=useRef(false);
+  const [projectSave]=useState(()=>new ProjectSave(storage.saveProject,(status,error)=>{
+    setSaved(status);
+    if(status==='Sin guardar')message(`No se pudo guardar el proyecto: ${errorText(error)}`);
+  }));
+  const [nativeExport,setNativeExport]=useState(false);
+  useEffect(()=>{
+    void window.atlasfxFFmpeg?.available().then(setNativeExport).catch(()=>{});
+  },[]);
+  const availableFormats=formats(nativeExport);const duration=endTime(p);const clip=selected?findClip(p,selected):undefined;
   const keyedClip=clip&&!clip.audioOnly&&p.assets[clip.assetId].kind!=='audio'&&!p.assets[clip.assetId].generated?clip:undefined;
   const pendingPlayback=useRef<symbol>();
   const stop=useCallback(()=>{
@@ -114,75 +129,126 @@ export function App(){
   const split=useCallback(()=>{stop();const s=useEditor.getState();if(s.selected)s.apply(d=>splitClip(d,s.selected!,timeRef.current));},[stop]);
   const remove=useCallback(()=>{stop();const s=useEditor.getState();if(s.selected){s.apply(d=>deleteClip(d,s.selected!));s.select();}},[stop]);
   const saveFile=useCallback(()=>{try{storage.download(new Blob([serialize(stateRef.current.p)],{type:'application/json'}),`${stateRef.current.p.name}.vedit`);setSuccess('Proyecto .vedit guardado.');}catch(e){message(errorText(e));}},[message]);
-  async function refreshRecent(){try{setRecent(await storage.listProjects());}catch(e){message(`No se pudo leer el almacenamiento: ${errorText(e)}`);}}
-  async function loadProject(next:Project,showEditor=true){
-    stop();const gen=++generation.current;open(next);seek(0);setResources({});if(showEditor){setHome(false);setCreateOnHome(false);}setBusy(true);
+  async function refreshRecent(){
+    const {projects,skipped}=await storage.listProjects();
+    setRecent(projects);
+    if(skipped)message(`Hay ${skipped} proyecto(s) incompatibles o dañados. Sus registros se conservaron.`);
+    return projects;
+  }
+  function adoptProject(next:Project,persist=false){
+    open(next);
+    projectSave.reset(persist?undefined:next);
+    if(persist)projectSave.schedule(next);
+  }
+  async function loadProject(next:Project,showEditor=true,persist=false){
+    if(projectOperation.current||busy)return;
+    projectOperation.current=true;
+    setBusy(true);
+    stop();
     try{
+      try { await projectSave.flush(); } catch { return; }
+      if(showEditor&&!persist&&next.id===useEditor.getState().h.present.id){
+        setHome(false);setCreateOnHome(false);return;
+      }
+      const gen=++generation.current;
+      adoptProject(next,persist);
+      timeRef.current=0;
+      setResources({});
+      if(showEditor){setHome(false);setCreateOnHome(false);}
       const loaded:Record<string,MediaResource>={};
-      const possibleCopies=Object.values(next.assets).filter(asset=>
-        asset.kind==='image'&&isLegacyThumbnailName(asset.name));
       for(const asset of Object.values(next.assets)){
         if(asset.generated)continue;
-        const blob=await storage.loadMedia(asset.id);
-        if(gen!==generation.current)return;
-        if(!blob)continue;
         try{
-          const media=await importMedia(new File([blob],asset.name,{type:asset.mime||blob.type}),possibleCopies.length>0);
+          const blob=await storage.loadMedia(asset.id);
+          if(!blob)continue;
+          const media=await importMedia(new File([blob],asset.name,{type:asset.mime||blob.type}));
+          if(gen!==generation.current){URL.revokeObjectURL(media.resource.url);return;}
           loaded[asset.id]=media.resource;
         }catch{/* Missing media can be relinked from the library. */}
       }
-      if(gen!==generation.current)return;
-      const signatures=videoThumbnailSignatures(next.assets,loaded);
-      const copies:string[]=[];
-      for(const asset of possibleCopies){
-        const resource=loaded[asset.id];
-        if(resource&&await isVideoThumbnailCopy(asset.name,resource.blob,signatures))copies.push(asset.id);
-      }
-      if(gen!==generation.current)return;
-      if(copies.length){
-        const copyIds=new Set(copies);
-        apply(current=>edit(current,draft=>{
-          for(const track of draft.tracks){
-            if(track.clips.some(clip=>copyIds.has(clip.assetId))){
-              track.clips=track.clips.filter(clip=>!copyIds.has(clip.assetId));
-            }
-          }
-          for(const id of copies)delete draft.assets[id];
-        }));
-      }
       setResources(loaded);
-    }catch(e){message(errorText(e));}finally{if(gen===generation.current)setBusy(false);}
+    }catch(e){message(errorText(e));}finally{projectOperation.current=false;setBusy(false);}
   }
+  useEffect(()=>useEditor.subscribe((next,previous)=>{
+    const current=next.h.present;
+    if(current!==previous.h.present&&current.id===previous.h.present.id)projectSave.schedule(current);
+  }),[projectSave]);
   useEffect(()=>{
     if(booted.current)return;booted.current=true;
-    void storage.listProjects().then(async projects=>{setRecent(projects);if(projects.length){await loadProject(projects[0],false);setHome(true);}}).catch(e=>message(`No se pudieron cargar los proyectos: ${errorText(e)}`)).finally(()=>setInitialized(true));
+    void refreshRecent().then(async projects=>{if(projects.length)await loadProject(projects[0],false);}).catch(e=>message(`No se pudieron cargar los proyectos: ${errorText(e)}`)).finally(()=>setInitialized(true));
   },[message]);
   useEffect(()=>{
-    if(!initialized||(home&&!recent.some(r=>r.id===p.id)))return;
-    setSaved('Guardando…');let canceled=false;
-    const timer=setTimeout(()=>{saveQueue.current=saveQueue.current.catch(()=>{}).then(()=>storage.saveProject(p)).then(()=>{if(!canceled)setSaved('Guardado');}).catch(e=>{if(!canceled){setSaved('Sin guardar');message(`No se pudo guardar: ${errorText(e)}`);}});},600);
-    return()=>{canceled=true;clearTimeout(timer);};
-  },[p,message,initialized,home,recent]);
+    function saveOnHide(){
+      if(document.visibilityState==='hidden')void projectSave.flush().catch(()=>{});
+    }
+    function beforeUnload(event:BeforeUnloadEvent){
+      if(!projectSave.dirty)return;
+      void projectSave.flush().catch(()=>{});
+      event.preventDefault();
+      event.returnValue='';
+    }
+    const unsubscribe=window.atlasfxWindow?.onCloseRequested(async()=>{
+      try { await projectSave.flush();return true; } catch { return false; }
+    });
+    document.addEventListener('visibilitychange',saveOnHide);
+    window.addEventListener('beforeunload',beforeUnload);
+    return()=>{
+      unsubscribe?.();
+      document.removeEventListener('visibilitychange',saveOnHide);
+      window.removeEventListener('beforeunload',beforeUnload);
+    };
+  },[projectSave]);
   const previousResources=useRef<Record<string,MediaResource>>({});
   useEffect(()=>{for(const [id,r] of Object.entries(previousResources.current)){if(resources[id]?.url!==r.url)URL.revokeObjectURL(r.url);}previousResources.current=resources;},[resources]);
-  useEffect(()=>{if(!canvas.current)return;engine.current=new Compositor(canvas.current,message);let frame=0;let last=performance.now();let lastAudio:number|undefined;let exportWasOpen=false;
+  useEffect(()=>{
+    if(!canvas.current)return;
+    let dirty=true;
+    const invalidate=()=>{dirty=true;};
+    document.fonts.addEventListener('loadingdone',invalidate);
+    engine.current=new Compositor(canvas.current,message,false,invalidate);
+    let frame=0;let last=performance.now();let lastAudio:number|undefined;let exportWasOpen=false;
+    let drawn:typeof stateRef.current|undefined;
+    let drawnTime=-1;
+    let drawnCinema:CinemaSettings|undefined;
+    let drawnColor:ClipColorPreview|undefined;
+    let idleCheckAt=0;
     const tick=(now:number)=>{const s=stateRef.current;const dt=now-last;last=now;
       if(s.exportOpen&&exportWasOpen){frame=requestAnimationFrame(tick);return;}
+      if(exportWasOpen)dirty=true;
       exportWasOpen=s.exportOpen;
       const end=endTime(s.p);
       const clock=engine.current?.audioClock();const elapsed=s.playing&&clock!==undefined&&lastAudio!==undefined?Math.max(0,clock-lastAudio)*1000:dt;lastAudio=s.playing?clock:undefined;
       if(s.playing){timeRef.current=Math.min(end,timeRef.current+Math.round(elapsed*1000));if(timeRef.current>=end){if(s.looping&&end>0)timeRef.current=0;else setPlaying(false);}}else if(timeRef.current>end)timeRef.current=end;
-      if(canvas.current&&(canvas.current.width!==s.p.settings.width||canvas.current.height!==s.p.settings.height)){canvas.current.width=s.p.settings.width;canvas.current.height=s.p.settings.height;}
-      engine.current?.monitorVolume(s.monitorGain);engine.current?.render(s.p,s.resources,timeRef.current,s.playing,cinemaPreview.current,clipColorPreview.current);
-      if(timeLabel.current)timeLabel.current.textContent=timecode(timeRef.current,s.p.settings.fps);
-      if(playhead.current)playhead.current.style.left=`${timeRef.current/SECOND*s.zoom}px`;
+      if(canvas.current&&(canvas.current.width!==s.p.settings.width||canvas.current.height!==s.p.settings.height)){canvas.current.width=s.p.settings.width;canvas.current.height=s.p.settings.height;dirty=true;}
+      const at=timeRef.current;
+      if(drawn?.monitorGain!==s.monitorGain||s.playing)engine.current?.monitorVolume(s.monitorGain);
+      if(dirty||s.playing||drawn?.playing||drawn?.p!==s.p||drawn?.resources!==s.resources||
+          drawnTime!==at||drawnCinema!==cinemaPreview.current||drawnColor!==clipColorPreview.current){
+        dirty=false;
+        drawnCinema=cinemaPreview.current;
+        drawnColor=clipColorPreview.current;
+        engine.current?.render(s.p,s.resources,at,s.playing,drawnCinema,drawnColor);
+      }else if(now>=idleCheckAt){
+        engine.current?.expireIdle(now);
+        idleCheckAt=now+2500;
+      }
+      if(drawnTime!==at||drawn?.p.settings.fps!==s.p.settings.fps){
+        if(timeLabel.current)timeLabel.current.textContent=timecode(at,s.p.settings.fps);
+      }
+      if(drawnTime!==at||drawn?.zoom!==s.zoom){
+        if(playhead.current)playhead.current.style.left=`${at/SECOND*s.zoom}px`;
+      }
+      drawn=s;
+      drawnTime=at;
       frame=requestAnimationFrame(tick);
-    };frame=requestAnimationFrame(tick);return()=>{cancelAnimationFrame(frame);engine.current?.dispose();};
+    };
+    frame=requestAnimationFrame(tick);
+    return()=>{cancelAnimationFrame(frame);document.fonts.removeEventListener('loadingdone',invalidate);engine.current?.dispose();};
   },[message]);
   useEffect(()=>{if(error){const timer=setTimeout(()=>message(''),8000);return()=>clearTimeout(timer);}},[error,message]);
   useEffect(()=>{if(success){const timer=setTimeout(()=>setSuccess(''),6000);return()=>clearTimeout(timer);}},[success]);
   useEffect(()=>{
-    const onKey=(e:KeyboardEvent)=>{if(progress!==null||subtitleOpen)return;if(trackToDelete){if(e.key==='Escape')setTrackToDelete(undefined);return;}if(e.key==='Escape'){setHome(false);setExportOpen(false);setRenderReview(undefined);setWorkspaceDialog(undefined);setContentSection(undefined);setTransitionSelection(undefined);return;}if(e.target instanceof HTMLElement&&e.target.closest('input,textarea,select,[contenteditable="true"],.source-monitor'))return;const mod=e.ctrlKey||e.metaKey;
+    const onKey=(e:KeyboardEvent)=>{if(progress!==null||subtitleOpen||!initialized||projectOperation.current)return;if(trackToDelete){if(e.key==='Escape')setTrackToDelete(undefined);return;}if(e.key==='Escape'){setHome(false);setExportOpen(false);setRenderReview(undefined);setWorkspaceDialog(undefined);setContentSection(undefined);setTransitionSelection(undefined);return;}if(e.target instanceof HTMLElement&&e.target.closest('input,textarea,select,[contenteditable="true"],.source-monitor'))return;const mod=e.ctrlKey||e.metaKey;
       if(home||exportOpen||workspaceDialog||contentSection||transitionSelection)return;
       if(e.code==='Space'){if((e.target as HTMLElement).closest('button')&&!(e.target as HTMLElement).closest('.timeline-clip'))return;e.preventDefault();toggle();}else if(mod&&e.key.toLowerCase()==='z'){e.preventDefault();stop();if(e.shiftKey)redo();else undo();}
       else if(mod&&e.key.toLowerCase()==='s'){e.preventDefault();if(e.shiftKey)saveFile();else void saveLocal();}
@@ -194,9 +260,9 @@ export function App(){
       else if(e.key.toLowerCase()==='k')stop();else if(e.key.toLowerCase()==='l')void play();else if(e.key.toLowerCase()==='j'){stop();seek(timeRef.current-SECOND);}
       else if(e.key==='+'||e.key==='=')setZoom(z=>stepTimelineZoom(z,1));else if(e.key==='-')setZoom(z=>stepTimelineZoom(z,-1));
     };window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);
-  },[toggle,play,stop,undo,redo,saveFile,split,remove,seek,home,exportOpen,progress,workspaceDialog,contentSection,transitionSelection,subtitleOpen,trackToDelete,hasClipboard,p,selected,resources,busy]);
+  },[toggle,play,stop,undo,redo,saveFile,split,remove,seek,home,exportOpen,progress,workspaceDialog,contentSection,transitionSelection,subtitleOpen,trackToDelete,hasClipboard,p,selected,resources,busy,initialized]);
   async function importFiles(files:FileList|File[],placement?:Placement,fromDrop=false){
-    if(busy||progress!==null)return;
+    if(busy||projectOperation.current||!initialized||progress!==null)return;
     stop();setBusy(true);
     const gen=generation.current;
     const start=timeRef.current;
@@ -296,11 +362,14 @@ export function App(){
   async function startExport(){
     if(!availableFormats.length)return;stop();setExportNotice('');abort.current=new AbortController();setProgress(0);
     try{
-      const result=await exportVideo(p,resources,{...exportSize,frame,fps:exportFps,bitrate:exportQuality,mime:availableFormats[exportFormat].mime},abort.current.signal,setProgress,setExportNotice);
+      const result=await exportVideo(p,resources,{...exportSize,frame,fps:exportFps,bitrate:exportQuality,mime:availableFormats[exportFormat].mime,native:availableFormats[exportFormat].native},abort.current.signal,setProgress,setExportNotice);
       setRenderReview({...result,name:`${exportName||p.name}.${availableFormats[exportFormat].extension}`,fps:exportFps});
     }catch(e){if(!(e instanceof DOMException&&e.name==='AbortError'))message(errorText(e));}finally{setProgress(null);}
   }
-  async function saveLocal(){try{setSaved('Guardando…');await storage.saveProject(stateRef.current.p);setSaved('Guardado');setSuccess('Proyecto guardado.');}catch(e){setSaved('Sin guardar');message(errorText(e));}}
+  async function saveLocal(){
+    projectSave.schedule(useEditor.getState().h.present);
+    try { await projectSave.flush();setSuccess('Proyecto guardado.'); } catch { /* The save status reports the error. */ }
+  }
   function canSeparateAudio(id = selected) {
     if (!id || busy || progress !== null) return false;
     const track = p.tracks.find(track => track.clips.some(clip => clip.id === id));
@@ -317,7 +386,35 @@ export function App(){
   function copySelection(cut=false){const state=useEditor.getState();if(!state.selected)return;try{clipboard.current=copyClip(state.h.present,state.selected);setHasClipboard(true);if(cut){stop();state.apply(d=>deleteClip(d,state.selected!));state.select();}}catch(e){message(errorText(e));}}
   function pasteSelection(mode:'insert'|'overwrite'|'overlay'='insert',at=timeRef.current){if(clipboard.current){stop();const data=clipboard.current;apply(d=>pasteClip(d,data,at,mode));}}
   function showDialog(mode:DialogMode){stop();setWorkspaceDialog(mode);}
-  function showProjects(create=false){stop();setCreateOnHome(create);void refreshRecent();setHome(true);}
+  async function showProjects(create=false){
+    if(busy||projectOperation.current)return;
+    stop();
+    setCreateOnHome(create);
+    setHome(true);
+    projectOperation.current=true;
+    setBusy(true);
+    try {
+      try { await projectSave.flush(); } catch { /* Keep the library available for a retry or backup. */ }
+      await refreshRecent();
+    } catch(e) { message(`No se pudo leer el almacenamiento: ${errorText(e)}`); }
+    finally { projectOperation.current=false;setBusy(false); }
+  }
+  async function deleteLocalProject(id:string){
+    if(projectOperation.current||busy)return;
+    projectOperation.current=true;
+    setBusy(true);
+    try {
+      if(id===useEditor.getState().h.present.id){
+        try { await projectSave.flush(); } catch { return; }
+        await storage.deleteProject(id);
+        adoptProject(createProject());
+        setResources({});
+        timeRef.current=0;
+      }else await storage.deleteProject(id);
+      setRecent(projects=>projects.filter(project=>project.id!==id));
+    } catch(e) { message(errorText(e)); }
+    finally { projectOperation.current=false;setBusy(false); }
+  }
   function frameStep(direction:number){stop();seek(frameToTime(timeToFrame(timeRef.current,p.settings.fps)+direction,p.settings.fps));}
   function goEdge(direction:number){const edges=[0,...p.tracks.flatMap(t=>t.clips.flatMap(c=>[c.start,c.start+c.duration]))].sort((a,b)=>a-b);const target=direction<0?edges.filter(n=>n<timeRef.current-1).at(-1):edges.find(n=>n>timeRef.current+1);if(target!==undefined){stop();seek(target);}}
   function nearest(){const clips=p.tracks.flatMap(t=>t.clips);const closest=clips.sort((a,b)=>Math.max(0,a.start-timeRef.current,timeRef.current-a.start-a.duration)-Math.max(0,b.start-timeRef.current,timeRef.current-b.start-b.duration))[0];if(closest)select(closest.id);}
@@ -328,10 +425,10 @@ export function App(){
   const selectedAsset=(sourceId?p.assets[sourceId]:undefined)??(clip?p.assets[clip.assetId]:sourceAsset);
   const menus:EditorMenu[]=[
     {label:'Archivo',items:[
-      {label:'Crear proyecto…',action:()=>showProjects(true)},{label:'Abrir proyecto reciente…',action:showProjects},{label:'Importar medios…',shortcut:'Ctrl+I',separator:true,action:()=>fileInput.current?.click()},{label:'Importar proyecto…',action:()=>projectInput.current?.click()},{label:'Quitar medio seleccionado de la biblioteca',disabled:!sourceAsset,action:()=>sourceAsset&&removeLibraryAsset(sourceAsset.id)},
+      {label:'Crear proyecto…',action:()=>showProjects(true)},{label:'Abrir proyecto reciente…',action:()=>void showProjects()},{label:'Importar medios…',shortcut:'Ctrl+I',separator:true,action:()=>fileInput.current?.click()},{label:'Importar proyecto…',action:()=>projectInput.current?.click()},{label:'Quitar medio seleccionado de la biblioteca',disabled:!sourceAsset,action:()=>sourceAsset&&removeLibraryAsset(sourceAsset.id)},
       {label:'Guardar proyecto',shortcut:'Ctrl+S',separator:true,action:()=>void saveLocal()},{label:'Descargar proyecto como .vedit',shortcut:'Ctrl+Shift+S',action:saveFile},{label:'Crear copia de seguridad',action:()=>storage.download(new Blob([serialize(p)],{type:'application/json'}),`${p.name}-respaldo-${Date.now()}.vedit`)},
       {label:'Exportar video…',shortcut:'Ctrl+E',separator:true,disabled:!duration||busy,action:()=>{stop();setExportName(p.name);setExportOpen(true);}},{label:'Exportar metadatos CSV',action:exportMetadata},{label:'Guardar fotograma PNG',action:snapshot},
-      {label:'Configuración del proyecto…',separator:true,action:()=>showDialog('settings')},{label:'Usar resolución del medio seleccionado',disabled:!selectedAsset?.width||!selectedAsset?.height,action:()=>selectedAsset&&apply(d=>edit(d,x=>{x.settings.width=selectedAsset.width!;x.settings.height=selectedAsset.height!;}))},{label:'Notas del proyecto…',action:()=>showDialog('notes')},{label:'Organizador de proyectos',separator:true,action:showProjects}]},
+      {label:'Configuración del proyecto…',separator:true,action:()=>showDialog('settings')},{label:'Usar resolución del medio seleccionado',disabled:!selectedAsset?.width||!selectedAsset?.height,action:()=>selectedAsset&&apply(d=>edit(d,x=>{x.settings.width=selectedAsset.width!;x.settings.height=selectedAsset.height!;}))},{label:'Notas del proyecto…',action:()=>showDialog('notes')},{label:'Organizador de proyectos',separator:true,action:()=>void showProjects()}]},
     {label:'Edición',items:[{label:'Deshacer',shortcut:'Ctrl+Z',disabled:!h.past.length,action:()=>{stop();undo();}},{label:'Rehacer',shortcut:'Ctrl+Shift+Z',disabled:!h.future.length,action:()=>{stop();redo();}},{label:'Historial…',action:()=>showDialog('history')},
       {label:'Cortar clip',shortcut:'Ctrl+X',separator:true,disabled:!clip,action:()=>copySelection(true)},{label:'Copiar clip',shortcut:'Ctrl+C',disabled:!clip,action:()=>copySelection()},{label:'Pegar e insertar',shortcut:'Ctrl+V',disabled:!hasClipboard,action:()=>pasteSelection()},{label:'Pegar y sobrescribir',disabled:!hasClipboard,action:()=>pasteSelection('overwrite')},{label:'Pegar en una pista nueva',disabled:!hasClipboard,action:()=>pasteSelection('overlay')},{label:'Pegar atributos',disabled:!hasClipboard||!clip,action:()=>{const c=clipboard.current?.clip;if(c&&clip)apply(d=>setClipProps(d,clip.id,{volume:c.volume,scale:c.scale,x:c.x,y:c.y,rotation:c.rotation,opacity:c.opacity,color:c.color}));}},
       {label:'Duplicar clip',shortcut:'Ctrl+D',separator:true,disabled:!clip,action:()=>runClip(duplicateClip)},{label:'Eliminar clip',shortcut:'Supr',disabled:!clip,action:remove},{label:'Eliminar y cerrar espacio en pista',shortcut:'Shift+Supr',disabled:!clip,action:()=>runClip(rippleDelete)},{label:'Eliminar espacios vacíos',action:()=>{stop();apply(closeGaps);}},{label:'Cancelar selección',separator:true,action:()=>select()},{label:'Doble visor',separator:true,checked:dualView,action:toggleDualView}]},
@@ -367,10 +464,10 @@ export function App(){
       if(!internal)void importFiles(e.dataTransfer.files,undefined,true);
     }}>
     <input type="file" ref={fileInput} hidden multiple accept="video/*,audio/*,image/*" onChange={e=>{if(e.target.files)void importFiles(e.target.files);e.target.value='';}}/>
-    <input type="file" ref={projectInput} hidden accept=".vedit,application/json" onChange={async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{const next=parseProject(await file.text());await loadProject(next);}catch(e){message(errorText(e));}}}/>
+    <input type="file" ref={projectInput} hidden accept=".vedit,application/json" onChange={async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{const next=parseProject(await file.text());await loadProject(next,true,true);}catch(e){message(errorText(e));}}}/>
     <input type="file" ref={relinkInput} hidden accept="video/*,audio/*,image/*" onChange={e=>{const f=e.target.files?.[0];if(f)void relink(f);e.target.value='';}}/>
     <div className="editing-shell" {...(home||exportOpen||subtitleOpen||!!trackToDelete||!!workspaceDialog||!!contentSection||!!transitionSelection?{inert:''}:{})}><MenuBar menus={menus} disabled={progress!==null||busy}/>
-    <header className="app-header"><div className="brand"><div className="brand-mark"><img src={`${import.meta.env.BASE_URL}logo.png`} alt=""/></div><span>AtlasFX</span><span className="beta">ALPHA</span></div><div className="header-divider"/><button className="header-home" title="Proyectos" aria-label="Ver proyectos" disabled={progress!==null} onClick={()=>{stop();void refreshRecent();setHome(true);}}><House size={17}/></button><ChevronRight size={14} className="muted"/><input className="project-title" aria-label="Nombre del proyecto" value={p.name} disabled={progress!==null} maxLength={200} onChange={e=>apply(d=>edit(d,x=>{x.name=e.target.value;}))}/><span className="save-status">{saved==='Guardado'?<Check size={13}/>:<LoaderCircle size={13}/>} {saved}</span><div className="header-right"><button type="button" className="button secondary" disabled={busy||progress!==null} onClick={()=>showDialog('settings')}>Ajustes</button><button className="button secondary" title="Guardar proyecto (Ctrl+S)" disabled={progress!==null} onClick={()=>void saveLocal()}><Save size={15}/><span>Guardar proyecto</span></button><button className="button primary" disabled={!duration||busy||progress!==null} onClick={()=>{stop();setExportName(p.name);setExportOpen(true);}}><Download size={15}/> Exportar video</button></div></header>
+    <header className="app-header"><div className="brand"><div className="brand-mark"><img src={`${import.meta.env.BASE_URL}logo.png`} alt=""/></div><span>AtlasFX</span><span className="beta">ALPHA</span></div><div className="header-divider"/><button className="header-home" title="Proyectos" aria-label="Ver proyectos" disabled={busy||progress!==null} onClick={()=>void showProjects()}><House size={17}/></button><ChevronRight size={14} className="muted"/><input className="project-title" aria-label="Nombre del proyecto" value={p.name} disabled={progress!==null} maxLength={200} onChange={e=>apply(d=>edit(d,x=>{x.name=e.target.value;}))}/><span className="save-status">{saved==='Guardado'?<Check size={13}/>:<LoaderCircle size={13}/>} {saved}</span><div className="header-right"><button type="button" className="button secondary" disabled={busy||progress!==null} onClick={()=>showDialog('settings')}>Ajustes</button><button className="button secondary" title="Guardar proyecto (Ctrl+S)" disabled={progress!==null} onClick={()=>void saveLocal()}><Save size={15}/><span>Guardar proyecto</span></button><button className="button primary" disabled={!duration||busy||progress!==null} onClick={()=>{stop();setExportName(p.name);setExportOpen(true);}}><Download size={15}/> Exportar video</button></div></header>
     <main className="workspace"><nav className="resource-nav" aria-label="Tipos de medios">{[{id:'all',label:'Medios',icon:FolderOpen},{id:'video',label:'Video',icon:Film},{id:'audio',label:'Audio',icon:Music2},{id:'image',label:'Imagen',icon:ImageIcon}].map(({id,label,icon:Icon})=><button key={id} className={tab===id?'selected':''} onClick={()=>setTab(id as typeof tab)}><Icon size={21}/><span>{label}</span></button>)}</nav>
     <aside className="media-panel"><div className="panel-heading"><span>Biblioteca de medios</span><span className="counter">{importedAssets.length}</span></div><div className="library-content"><button className="button primary import-button" disabled={busy||progress!==null} onClick={()=>fileInput.current?.click()}>{busy?<LoaderCircle className="spin" size={15}/>:<Plus size={16}/>} {busy?'Importando…':'Importar medios'}</button><label className="search-box"><Search size={15}/><input placeholder="Buscar archivos…" aria-label="Buscar archivos" value={query} onChange={e=>setQuery(e.target.value)}/></label><div className="library-title"><span>ARCHIVOS DEL PROYECTO</span><span>{assets.length}</span></div>
       {assets.length?<div className="asset-grid">{assets.map(a=><div key={a.id} className={`asset-card ${!resources[a.id]?'missing':''} ${sourceAsset?.id===a.id?'source-selected':''}`} tabIndex={0} role="group" aria-label={`Medio ${a.name}`} onClick={()=>setSourceId(a.id)} onKeyDown={e=>{if(e.key==='Enter'&&e.target===e.currentTarget)setSourceId(a.id);}} draggable={!!resources[a.id]&&progress===null} onDragStart={e=>{if(!e.defaultPrevented){e.dataTransfer.setData('asset',a.id);assetDragActive.current=true;}}} onDoubleClick={()=>resources[a.id]&&progress===null&&addToTimeline(a.id)}><div className="asset-preview"
@@ -400,7 +497,7 @@ export function App(){
     <footer className="app-footer"><span>AtlasFX</span><span className="app-footer-center"><Clapperboard/> Edición</span><span>{importedAssets.length} medios · {p.tracks.length} pistas · {(duration/SECOND).toFixed(1)} s</span></footer>
     </div>
     {(error||success)&&<div className={`toast ${error?'error':'success'}`} role={error?'alert':'status'}>{error?<AlertCircle size={18}/>:<Check size={18}/>}<span>{error||success}</span><button aria-label="Cerrar aviso" onClick={()=>{message('');setSuccess('');}}><X size={15}/></button></div>}
-    {home&&<ProjectBrowser initialCreate={createOnHome} projects={recent} currentId={p.id} busy={busy} onOpen={next=>void loadProject(next)} onCreate={name=>void loadProject(createProject(name))} onImport={()=>projectInput.current?.click()} onClose={()=>setHome(false)} onDelete={async id=>{try{await storage.deleteProject(id);await refreshRecent();}catch(e){message(errorText(e));}}}/>}
+    {home&&<ProjectBrowser initialCreate={createOnHome} projects={recent} currentId={p.id} busy={busy||!initialized} onOpen={next=>void loadProject(next)} onCreate={name=>void loadProject(createProject(name),true,true)} onImport={()=>projectInput.current?.click()} onClose={()=>setHome(false)} onDelete={deleteLocalProject}/>}
     {transitionSelection&&<TransitionDialog project={p} selected={transitionSelection} onClose={()=>setTransitionSelection(undefined)} onSeek={seek}/>}
     {workspaceDialog&&<WorkspaceDialog key={p.id+'-'+workspaceDialog} mode={workspaceDialog} project={p}
       time={timeRef.current} onSeek={seek} onClose={()=>setWorkspaceDialog(undefined)}/>}

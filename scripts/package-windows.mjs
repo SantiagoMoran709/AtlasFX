@@ -35,7 +35,7 @@ try {
     main: 'main.cjs',
   }, null, 2));
   cpSync(path.join(desktop, 'main.cjs'), path.join(app, 'main.cjs'));
-  for (const file of ['preload.cjs', 'speech.cjs', 'speech.ps1']) {
+  for (const file of ['preload.cjs', 'speech.cjs', 'speech.ps1', 'ffmpeg.cjs']) {
     cpSync(path.join(desktop, file), path.join(app, file));
   }
   cpSync(path.join(desktop, 'logo.ico'), path.join(app, 'logo.ico'));

@@ -1,6 +1,6 @@
-import {useEffect,useLayoutEffect,useRef,useState,type MouseEvent,type PointerEvent} from 'react';
+import {useEffect,useLayoutEffect,useMemo,useRef,useState,type MouseEvent,type PointerEvent} from 'react';
 import {Eye,EyeOff,LockKeyhole,UnlockKeyhole,Volume2,VolumeX,Film,Music2,Plus,Scissors,Trash2,Undo2,Redo2,Magnet,Minus,Type} from 'lucide-react';
-import {MAX_TRACKS,SECOND,addAudioTrack,addVideoTrack,moveClipLayer,frameToTime,timeToFrame,sourceSpan,createTrack,endTime,edit,moveClip,setClipProps,snap,type Project,type Clip,type Track} from '@corte/core';
+import {MAX_TRACKS,SECOND,addAudioTrack,addVideoTrack,moveClipLayer,frameToTime,timeToFrame,sourceSpan,endTime,firstClipEndingAfter,edit,moveClip,setClipProps,snap,type Project,type Clip,type Track} from '@corte/core';
 import {useEditor} from './store';
 import {useViewport} from './useViewport';
 import {clampTimelineZoom,stepTimelineZoom,zoomToSlider,sliderToZoom,timelineZoomLabel,timelineTickStep,timelineTickLabel} from './timelineZoom';
@@ -10,7 +10,15 @@ interface Props {project:Project;resources:Record<string,MediaResource>;timeRef:
 export function Timeline({project:p,resources,timeRef,playheadRef,seek,split,remove,onTitle,onTransition,onSeparateAudio,onDeleteTrack,canSeparateAudio,zoom,setZoom,disabled}:Props){
   const {h,selected,select,apply,undo,redo,message}=useEditor();const [magnet,setMagnet]=useState(true);const scroll=useRef<HTMLDivElement>(null);
   const body=useRef<HTMLDivElement>(null);
-  const selectedTrackIndex=p.tracks.findIndex(track=>track.clips.some(clip=>clip.id===selected));
+  const [scrollLeft,setScrollLeft]=useState(0);
+  const [focusedClip,setFocusedClip]=useState<string>();
+  const pinned=useMemo(()=>new Map(p.tracks.map(track=>[
+    track.id,track.clips.filter(clip=>clip.id===selected||clip.id===focusedClip),
+  ])),[p.tracks,selected,focusedClip]);
+  const selectedTrackIndex=p.tracks.findIndex(track=>pinned.get(track.id)?.some(clip=>clip.id===selected));
+  const transitionsByTrack=useMemo(()=>new Map(p.tracks.map(track=>[
+    track.id,new Map(track.transitions?.map(transition=>[transition.to,transition])),
+  ])),[p.tracks]);
   useLayoutEffect(()=>{
     const viewport=body.current;
     const lane=scroll.current?.querySelectorAll<HTMLElement>('.track-lane')[selectedTrackIndex];
@@ -61,6 +69,23 @@ export function Timeline({project:p,resources,timeRef,playheadRef,seek,split,rem
   const seconds=Math.max(30,endTime(p)/SECOND+5);
   const width=Math.max(viewportWidth,seconds*zoom);
   const step=timelineTickStep(zoom);
+  const windowLeft=Math.max(0,Math.min(scrollLeft,width-viewportWidth)-320);
+  const windowRight=Math.min(width,windowLeft+viewportWidth+640);
+  const firstTick=Math.max(0,Math.floor(windowLeft/(step*zoom)));
+  const lastTick=Math.min(Math.floor((width-38)/(step*zoom)),Math.ceil(windowRight/(step*zoom)));
+  function visibleClips(track:Track) {
+    const clips=track.clips;
+    const visible:Clip[]=[];
+    for(let i=firstClipEndingAfter(clips,windowLeft/zoom*SECOND);i<clips.length&&
+        clips[i].start<=windowRight/zoom*SECOND;i++)visible.push(clips[i]);
+    for(const clip of pinned.get(track.id)??[]){
+      if(!visible.includes(clip)){
+        if(clip.start<windowLeft/zoom*SECOND)visible.unshift(clip);
+        else visible.push(clip);
+      }
+    }
+    return visible;
+  }
   const zoomLabel=timelineZoomLabel(zoom);
   function fitTimeline(){
     if(!scroll.current?.clientWidth)return;
@@ -173,16 +198,16 @@ export function Timeline({project:p,resources,timeRef,playheadRef,seek,split,rem
         aria-label={`Eliminar pista ${t.name}`} title={t.locked?'Desbloqueá la pista para eliminarla':'Eliminar pista'}
         onClick={()=>onDeleteTrack(t.id)}><Trash2/></button></div></div>)}
 </div>
-    <div className="timeline-scroll" ref={scroll} onWheel={e=>{if(e.ctrlKey){setZoom(stepTimelineZoom(zoom,e.deltaY>0?-1:1));}else if(e.shiftKey&&scroll.current)scroll.current.scrollLeft+=e.deltaY;}}><div className="timeline-content" style={{width}}>
-      <div className="ruler" onPointerDown={scrub}>{p.markers?.map(m=><button className="timeline-marker" key={m.id} style={{left:m.time/SECOND*zoom}} title={m.name} aria-label={`Ir a ${m.name}`} onPointerDown={e=>e.stopPropagation()} onClick={()=>seek(m.time)}>◆</button>)}{Array.from({length:Math.max(1,Math.floor((width-38)/(step*zoom))+1)},(_,i)=><span key={i} style={{left:i*step*zoom}}>{timelineTickLabel(i*step,step)}</span>)}</div>
-      {p.tracks.map(t=><div className={`track-lane ${!t.visible?'invisible-track':''} ${t.role==='titles'?'text-track':''}`} style={{backgroundSize:`${step*zoom}px 100%`}} key={t.id} data-track={t.id} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(disabled)return;const assetId=e.dataTransfer.getData('asset');const asset=p.assets[assetId];if(!asset)return;if(t.locked){message('La pista está bloqueada.');return;}const start=Math.max(0,Math.round((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom*SECOND));apply(d=>edit(d,x=>{const track=x.tracks.find(a=>a.id===t.id)!;track.clips.push({id:crypto.randomUUID(),assetId,start,duration:asset.duration,sourceIn:0,volume:1,opacity:1,scale:1,rotation:0});}));}} onClick={e=>{if(e.target===e.currentTarget&&!disabled){select();seek(Math.round((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom*SECOND));}}}>
-      {t.clips.map(c=>{const asset=p.assets[c.assetId];const kind=c.audioOnly?'audio':asset.kind;const clipWidth=c.duration/SECOND*zoom;const name=c.title?(c.title.text.trim()||'Título'):asset.name;return <button key={c.id} className={`timeline-clip ${kind} ${selected===c.id?'selected':''} ${c.title?'title-clip':''} ${clipWidth<16?'compact-clip':''} ${!asset.generated&&!resources[asset.id]?'missing':''}`} style={{left:c.start/SECOND*zoom,width:clipWidth}} aria-label={c.audioOnly?`Clip de audio ${name}`:`Clip ${name}`} onContextMenu={e=>openContext(e,c.id)} onClick={e=>{e.stopPropagation();select(c.id);}} onPointerDown={e=>{
+    <div className="timeline-scroll" ref={scroll} onScroll={e=>setScrollLeft(e.currentTarget.scrollLeft)} onWheel={e=>{if(e.ctrlKey){setZoom(stepTimelineZoom(zoom,e.deltaY>0?-1:1));}else if(e.shiftKey&&scroll.current)scroll.current.scrollLeft+=e.deltaY;}}><div className="timeline-content" style={{width}}>
+      <div className="ruler" onPointerDown={scrub}>{p.markers?.filter(m=>m.time/SECOND*zoom>=windowLeft&&m.time/SECOND*zoom<=windowRight).map(m=><button className="timeline-marker" key={m.id} style={{left:m.time/SECOND*zoom}} title={m.name} aria-label={`Ir a ${m.name}`} onPointerDown={e=>e.stopPropagation()} onClick={()=>seek(m.time)}>◆</button>)}{Array.from({length:Math.max(0,lastTick-firstTick+1)},(_,i)=>{const tick=firstTick+i;return <span key={tick} style={{left:tick*step*zoom}}>{timelineTickLabel(tick*step,step)}</span>;})}</div>
+      {p.tracks.map(t=>{const clips=visibleClips(t);return <div className={`track-lane ${!t.visible?'invisible-track':''} ${t.role==='titles'?'text-track':''}`} style={{backgroundSize:`${step*zoom}px 100%`}} key={t.id} data-track={t.id} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(disabled)return;const assetId=e.dataTransfer.getData('asset');const asset=p.assets[assetId];if(!asset)return;if(t.locked){message('La pista está bloqueada.');return;}const start=Math.max(0,Math.round((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom*SECOND));apply(d=>edit(d,x=>{const track=x.tracks.find(a=>a.id===t.id)!;track.clips.push({id:crypto.randomUUID(),assetId,start,duration:asset.duration,sourceIn:0,volume:1,opacity:1,scale:1,rotation:0});}));}} onClick={e=>{if(e.target===e.currentTarget&&!disabled){select();seek(Math.round((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom*SECOND));}}}>
+      {clips.map(c=>{const asset=p.assets[c.assetId];const kind=c.audioOnly?'audio':asset.kind;const clipWidth=c.duration/SECOND*zoom;const name=c.title?(c.title.text.trim()||'Título'):asset.name;return <button key={c.id} className={`timeline-clip ${kind} ${selected===c.id?'selected':''} ${c.title?'title-clip':''} ${clipWidth<16?'compact-clip':''} ${!asset.generated&&!resources[asset.id]?'missing':''}`} style={{left:c.start/SECOND*zoom,width:clipWidth}} aria-label={c.audioOnly?`Clip de audio ${name}`:`Clip ${name}`} onFocus={()=>setFocusedClip(c.id)} onBlur={()=>setFocusedClip(undefined)} onContextMenu={e=>openContext(e,c.id)} onClick={e=>{e.stopPropagation();select(c.id);}} onPointerDown={e=>{
         const target=e.target as HTMLElement;
         const fade=target.dataset.fade;
         if(fade==='in'||fade==='out')dragFade(e,target,c,t,fade);
         else startDrag(e,c,t,target.dataset.edge==='left'?'left':target.dataset.edge==='right'?'right':'move');
       }}>
-        <span className="trim-handle left" data-edge="left"/><span className="clip-name">{c.title?<Type size={12}/>:kind==='audio'?<Music2 size={12}/>:c.audioDetached?<VolumeX size={12}/>:<Film size={12}/>} {name}</span>{kind!=='audio'&&resources[asset.id]?.thumbnail&&<div className="clip-strip" style={{backgroundImage:`url("${resources[asset.id].thumbnail}")`}}/>}{kind==='audio'&&<span className="audio-clip-label">{c.audioOnly?'Audio separado':'Audio'}</span>}<span className="trim-handle right" data-edge="right"/>
+        <span className="trim-handle left" data-edge="left"/><span className="clip-name">{c.title?<Type size={12}/>:kind==='audio'?<Music2 size={12}/>:c.audioDetached?<VolumeX size={12}/>:<Film size={12}/>} {name}</span>{kind!=='audio'&&(resources[asset.id]?.videoPreview??resources[asset.id]?.thumbnail)&&<div className="clip-strip" style={{backgroundImage:`url("${resources[asset.id].videoPreview??resources[asset.id].thumbnail}")`}}/>}{kind==='audio'&&<span className="audio-clip-label">{c.audioOnly?'Audio separado':'Audio'}</span>}<span className="trim-handle right" data-edge="right"/>
         {kind==='audio'&&!disabled&&!t.locked&&(['in','out'] as const).map(edge=>{
           const duration=c[edge==='in'?'fadeIn':'fadeOut']??0;
           const title=`Fundido de ${edge==='in'?'entrada':'salida'} · ${(duration/SECOND).toFixed(2)} s`;
@@ -192,15 +217,16 @@ export function Timeline({project:p,resources,timeRef,playheadRef,seek,split,rem
           return <span key={edge} data-fade={edge} className={`audio-fade-handle fade-${edge}`} title={title}
             style={{'--fade-offset':`${offset}px`,top:overlap?12:undefined} as React.CSSProperties}/>;
         })}</button>;})}
-      {t.transitions?.map(transition=>{
-        const incoming=t.clips.find(clip=>clip.id===transition.to);
-        if(!incoming)return null;
+      {clips.map(incoming=>{
+        const transition=transitionsByTrack.get(t.id)?.get(incoming.id);
+        const x=incoming.start/SECOND*zoom;
+        if(!transition||x<windowLeft||x>windowRight)return null;
         const label={dissolve:'Disolvencia cruzada',wipe:'Barrido',dip:'Fundido a negro',flash:'Destello de luz'}[transition.kind];
         return <button key={transition.from} className="transition-cut" aria-label={`Editar transición de ${label.toLowerCase()}`} title={label}
           style={{left:incoming.start/SECOND*zoom,width:Math.max(18,transition.duration/SECOND*zoom)}}
           disabled={disabled||t.locked} onClick={event=>{event.stopPropagation();select(transition.from);onTransition(transition.from);}}/>;
       })}
-      </div>)}
+      </div>;})}
       <div className="playhead" ref={playheadRef} style={{left:0}}><div/></div>
       {!p.tracks.some(t=>t.clips.length>0)&&<div className="timeline-empty">Arrastra tus medios aquí para empezar a contar tu historia</div>}
     </div></div></div><div className="timeline-footer"><span>Espacio <b>Reproducir</b> <em>·</em> S <b>Dividir</b> <em>·</em> Supr <b>Eliminar</b></span></div>

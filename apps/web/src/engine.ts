@@ -1,4 +1,4 @@
-import {activeClips, cinemaHeight, fadeEnvelope, transitionNear, sourceSpan, SECOND, type CinemaSettings, type Asset, type Clip, type Project, type Track} from '@corte/core';
+import {firstClipEndingAfter, cinemaHeight, fadeEnvelope, transitionNear, sourceSpan, SECOND, type CinemaSettings, type Asset, type Clip, type Project, type Track} from '@corte/core';
 import type {MediaResource} from './media';
 import {AudioGraph,silentLevels} from './audioGraph';
 import {prepareAudio} from './scheduledAudio';
@@ -27,8 +27,13 @@ export class Compositor {
   private titleViewport?:TitleViewport;
   private scheduledBuffers?:Map<string,AudioBuffer>;
   private failed = new Set<string>();
+  private meterSample?: ReturnType<AudioGraph['levels']>;
+  private meterSampleAt = -Infinity;
+  private indexedProject?: Project;
+  private projectClips = new Set<string>();
   private lastActive=new Set<string>();private pendingSeek=new Set<string>();private previousTime=0;private sourceMapping=new Map<string,string>();
-  constructor(private canvas: HTMLCanvasElement,private onError?: (message:string)=>void,private silent=false) {}
+  constructor(private canvas: HTMLCanvasElement,private onError?: (message:string)=>void,private silent=false,
+    private invalidate?:()=>void) {}
   async connectAudio(project:Project) {
     this.graph??=new AudioGraph(false);await this.graph.resume();await this.graph.prepareDucking(project);return this.graph.destination.stream;
   }
@@ -40,9 +45,16 @@ export class Compositor {
   audioClock(){return this.graph?.context.currentTime;}
   async prepareExportAudio(p:Project,resources:Record<string,MediaResource>,signal:AbortSignal){if(this.graph)this.scheduledBuffers=await prepareAudio(this.graph.context,p,resources,signal);return !!this.scheduledBuffers;}
   startExportAudio(p:Project){return this.graph&&this.scheduledBuffers?this.graph.schedule(p,this.scheduledBuffers):this.audioClock();}
-  meterLevels=()=>this.graph?.levels()??silentLevels();
-  previewBusVolume(id:string,value?:number){this.graph?.overrideBus(id,value);}
-  previewClipVolume(id:string,value?:number){this.graph?.overrideClip(id,value);}
+  meterLevels=()=>{
+    const now=performance.now();
+    if(!this.meterSample||now-this.meterSampleAt>=1000/30){
+      this.meterSample=this.graph?.levels()??silentLevels();
+      this.meterSampleAt=now;
+    }
+    return this.meterSample;
+  };
+  previewBusVolume(id:string,value?:number){this.graph?.overrideBus(id,value);this.invalidate?.();}
+  previewClipVolume(id:string,value?:number){this.graph?.overrideClip(id,value);this.invalidate?.();}
   previewVoiceBand(band:'body'|'clarity'|'deEss',value?:number){this.graph?.previewVoiceBand(band,value);}
   monitorVolume(value:number){this.graph?.setMonitorVolume(value);}
   render(project: Project, resources: Record<string, MediaResource>, at: number, playing: boolean, previewCinema?: CinemaSettings, colorPreview?: ClipColorPreview, titleViewport?:TitleViewport) {
@@ -54,7 +66,6 @@ export class Compositor {
     this.titleViewport=titleViewport;
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    const active = new Map(activeClips(project, at).map(layer => [layer.track.id, layer.clip]));
     const needed = new Set<string>();
     const now = performance.now();
     const backwards = at < this.previousTime;
@@ -62,9 +73,12 @@ export class Compositor {
     this.graph?.configure(project);
 
     // Track zero is the topmost layer.
-    for (const track of project.tracks.slice().reverse()) {
+    for (let i=project.tracks.length-1;i>=0;i--) {
+      const track=project.tracks[i];
       if (!track.visible) continue;
-      const current = active.get(track.id);
+      const index = firstClipEndingAfter(track.clips, at);
+      const candidate = track.clips[index];
+      const current = candidate && candidate.start <= at ? candidate : undefined;
       const cut = transitionNear(track, at, playing ? SECOND : 0);
       const prepare = (clip: Clip, sampleAt: number, advance: boolean) => {
         const asset = project.assets[clip.assetId];
@@ -86,8 +100,8 @@ export class Compositor {
         if (cut && cut.to !== current) prepare(cut.to, cut.start, false);
         if (current) prepare(current, at, playing);
         if (playing && !cut && (!current || current.start + current.duration <= at + SECOND)) {
-          const next = track.clips.find(clip => clip.start > at && clip.start <= at + SECOND);
-          if (next) prepare(next, next.start, false);
+          const next = track.clips[index + (current ? 1 : 0)];
+          if (next && next.start <= at + SECOND) prepare(next, next.start, false);
         }
       }
       if (current) this.drawClip(ctx, current, at, project.settings.height);
@@ -95,12 +109,15 @@ export class Compositor {
     if(cinema){
       (this.cinema??=new CinemaRenderer()).draw(ctx,cinema,at);
     }
-    const existing = new Set(project.tracks.flatMap(t => t.clips.map(c => c.id)));
+    if(this.indexedProject!==project){
+      this.indexedProject=project;
+      this.projectClips=new Set(project.tracks.flatMap(t=>t.clips.map(c=>c.id)));
+    }
     const idle: {id: string; used: number}[] = [];
     for (const [id, element] of this.elements) {
       if (needed.has(id)) continue;
       const used = this.lastUsed.get(id) ?? 0;
-      if (!existing.has(id) || now - used >= IDLE_MEDIA_MS) this.release(id);
+      if (!this.projectClips.has(id) || now - used >= IDLE_MEDIA_MS) this.release(id);
       else {
         idle.push({id, used});
         if (element instanceof HTMLMediaElement) {
@@ -114,6 +131,11 @@ export class Compositor {
       idle.slice(MAX_IDLE_MEDIA).forEach(({id}) => this.release(id));
     }
     this.lastActive = needed;
+  }
+  expireIdle(now:number){
+    for(const [id,used] of this.lastUsed){
+      if(!this.lastActive.has(id)&&now-used>=IDLE_MEDIA_MS)this.release(id);
+    }
   }
 
   private updateMedia(clip: Clip, track: Track, asset: Asset, resource: MediaResource,
@@ -129,12 +151,16 @@ export class Compositor {
         this.pendingSeek.add(clip.id);
         element.preload = 'auto';
         if (element instanceof HTMLVideoElement) element.playsInline = true;
-        element.addEventListener('error', () => {
-          if (this.failed.has(asset.id)) return;
-          this.failed.add(asset.id);
-          this.onError?.(`No se puede reproducir ${asset.name}. Reubica el medio o conviértelo a un códec compatible.`);
-        });
       }
+      if(this.invalidate)for(const event of ['load','loadedmetadata','loadeddata','seeked']){
+        element.addEventListener(event,this.invalidate);
+      }
+      const failed=()=>{
+        if(this.elements.get(clip.id)!==element||this.failed.has(clip.id))return;
+        this.failed.add(clip.id);
+        this.onError?.(`No se pudo decodificar «${asset.name}» en la pista «${track.name}» (clip en ${(clip.start/SECOND).toFixed(2)} s). Reubica el medio o conviértelo a un códec compatible.`);
+      };
+      element.addEventListener('error',failed);
       element.src = resource.url;
       this.elements.set(clip.id, element);
       this.urls.set(clip.id, resource.url);
@@ -259,6 +285,6 @@ export class Compositor {
     ctx.drawImage(scratch, 0, 0);
     return true;
   }
-  private release(id:string){const el=this.elements.get(id);if(el instanceof HTMLMediaElement){el.pause();el.removeAttribute('src');el.load();}this.graph?.release(id);this.elements.delete(id);this.urls.delete(id);this.lastUsed.delete(id);this.pendingSeek.delete(id);this.sourceMapping.delete(id);}
+  private release(id:string){const el=this.elements.get(id);this.elements.delete(id);this.failed.delete(id);if(el instanceof HTMLMediaElement){el.pause();el.removeAttribute('src');el.load();}this.graph?.release(id);this.urls.delete(id);this.lastUsed.delete(id);this.pendingSeek.delete(id);this.sourceMapping.delete(id);}
   dispose(){for(const id of this.elements.keys())this.release(id);this.graph?.dispose();this.chroma?.dispose();this.cinema?.dispose();}
 }

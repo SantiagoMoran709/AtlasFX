@@ -121,6 +121,20 @@ describe('comandos de edición de los menús', () => {
     const changed = setClipProps(p, p.tracks[0].clips[1].id, { opacity: 0.5 });
     expect(() => joinNext(changed, id)).toThrow('mismas propiedades');
   });
+  it.each([
+    { scaleX: 1.5 },
+    { scaleY: 1.5 },
+    { x: 25 },
+    { y: 75 },
+    { blurBackground: true as const },
+  ])('unir rechaza cambios de encuadre en el segundo corte (%o)', (props) => {
+    const project = fixture();
+    const id = project.tracks[0].clips[0].id;
+    const split = splitClip(project, id, seconds(4));
+    const changed = setClipProps(split, split.tracks[0].clips[1].id, props);
+    expect(() => joinNext(changed, id)).toThrow('mismas propiedades');
+    expect(changed.tracks[0].clips).toHaveLength(2);
+  });
   it('insertar un espacio divide el material bajo el cursor', () => {
     const p = fixture();
     const next = insertGap(p, seconds(4), seconds(2));
