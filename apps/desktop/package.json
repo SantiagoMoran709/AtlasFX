@@ -1,1 +1,1 @@
-{"name":"@corte/desktop","version":"0.1.0","private":true,"main":"main.cjs","scripts":{"start":"electron .","build":"node --check main.cjs","typecheck":"node --check main.cjs"},"devDependencies":{"electron":"latest"}}
+{"name":"@corte/desktop","version":"0.1.1","private":true,"main":"main.cjs","scripts":{"start":"electron .","build":"node --check main.cjs","typecheck":"node --check main.cjs"},"devDependencies":{"electron":"latest"}}

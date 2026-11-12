@@ -3,6 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } fro
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { rcedit } from 'rcedit';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') {
   throw new Error('Genera el ZIP desde Windows con Node.js y Electron x64.');
@@ -22,8 +23,18 @@ const pending = path.join(output, `.${path.basename(stage)}.zip`);
 
 try {
   cpSync(path.dirname(electron), bundle, { recursive: true });
-  // Renaming the executable preserves the original Electron binary.
   renameSync(path.join(bundle, 'electron.exe'), path.join(bundle, 'AtlasFX.exe'));
+  await rcedit(path.join(bundle, 'AtlasFX.exe'), {
+    icon: path.join(desktop, 'logo.ico'),
+    'file-version': version,
+    'product-version': version,
+    'version-string': {
+      ProductName: 'AtlasFX',
+      FileDescription: 'AtlasFX',
+      InternalName: 'AtlasFX',
+      OriginalFilename: 'AtlasFX.exe',
+    },
+  });
   renameSync(path.join(bundle, 'electron_wer.dll'), path.join(bundle, 'AtlasFX_wer.dll'));
   rmSync(path.join(bundle, 'resources', 'default_app.asar'), { force: true });
   const app = path.join(bundle, 'resources', 'app');

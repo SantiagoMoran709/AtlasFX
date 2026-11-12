@@ -12,6 +12,7 @@ function isEditorUrl(url) {
   } catch { return false; }
 }
 app.setName('AtlasFX');
+if (process.platform === 'win32') app.setAppUserModelId('com.atlasfx.editor');
 const userDataDir=app.commandLine.getSwitchValue('user-data-dir');
 app.setPath('userData',path.isAbsolute(userDataDir)?userDataDir:path.join(app.getPath('appData'),'CorteStudio'));
 if (!app.requestSingleInstanceLock()) app.quit();
