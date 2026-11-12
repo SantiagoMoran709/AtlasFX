@@ -1,5 +1,11 @@
 # AtlasFX
 
+[![Descargar AtlasFX para Windows](https://img.shields.io/badge/DESCARGAR_ATLASFX-PARA_WINDOWS-2F7466?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/SantiagoMoran709/AtlasFX/releases/download/v0.1.0/AtlasFX-0.1.0-Windows-x64.zip)
+
+**Descargá el ZIP, extraé toda la carpeta y abrí `AtlasFX.exe`.**
+
+[Ver la versión publicada y sus archivos](https://github.com/SantiagoMoran709/AtlasFX/releases/latest)
+
 Editor de video multipista para web y escritorio. Incluye interfaz en español, edición local y un núcleo TypeScript independiente de React.
 
 ## Descargar y abrir en Windows x64
